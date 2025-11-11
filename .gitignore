@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual envs
+venv/
+.env/
+.env.*
+
+# Streamlit
+.streamlit/
+
+# Workspace/output
+workspaces/
+*.log
+
+# Misc
+.DS_Store
