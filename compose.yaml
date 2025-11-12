@@ -1,0 +1,134 @@
+services:
+  onedrive-listener:
+    profiles: ["default", "local", "data-ingestion", "onedrive-listener"]
+    build:
+      context: src/onedrive_listener
+      dockerfile: Dockerfile  # ensure this file exists (was Dockerfile.yml before)
+    container_name: onedrive-listener
+    restart: unless-stopped
+    environment:
+      # Microsoft Graph auth
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+      - TENANT_ID=${TENANT_ID}
+      # OneDrive/SharePoint location
+      - DRIVE_ID=${DRIVE_ID}
+      - ONEDRIVE_FOLDER_ID=${ONEDRIVE_FOLDER_ID}
+      # Azure Storage
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING}
+      - BLOB_CONTAINER=${BLOB_CONTAINER:-ingestion}
+      - CSV_PREFIX=${CSV_PREFIX:-csv}
+      # ETL API base (service DNS on the same network)
+      - ETL_API_BASE=http://api:8000
+      # Normalization defaults
+      - NORMALIZE_REMOVE_DUPES=${NORMALIZE_REMOVE_DUPES:-true}
+      - NORMALIZE_MISSING_STRATEGY=${NORMALIZE_MISSING_STRATEGY:-drop}
+      - ID_FROM_COLUMN=${ID_FROM_COLUMN:-proyecto}
+      - ID_COLUMN_NAME=${ID_COLUMN_NAME:-id}
+      - ID_SEPARATOR=${ID_SEPARATOR:-"-"}
+      - ID_START=${ID_START:-1}
+      # Misc
+      - POLL_INTERVAL=${POLL_INTERVAL:-10}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - cfia-network
+
+  opensearch:
+    profiles: ["search"]
+    image: opensearchproject/opensearch:2.11.0
+    container_name: cfia-opensearch
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - DISABLE_SECURITY_PLUGIN=true
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - cfia-network
+
+  opensearch-dashboards:
+    profiles: ["dashboards"]
+    image: opensearchproject/opensearch-dashboards:2.11.0
+    container_name: cfia-dashboards
+    ports:
+      - "5601:5601"
+    environment:
+      - OPENSEARCH_HOSTS=http://opensearch:9200
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    networks:
+      - cfia-network
+    depends_on:
+      - opensearch
+
+  api:
+    profiles: ["api"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cfia-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENSEARCH_HOST=opensearch
+      - OPENSEARCH_PORT=9200
+      - DATA_PATH=/app/data
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    networks:
+      - cfia-network
+    command: python -m uvicorn src.api.fastapi_app:app --host 0.0.0.0 --port 8000 --reload
+
+  portainer:
+    profiles: ["local", "portainer", "admin"]
+    image: ${PORTAINER_IMAGE:-portainer/portainer-ce:latest}
+    container_name: asidelco-portainer
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    ports:
+      - "${PORTAINER_PORT:-9000}:9000"
+    environment:
+      - TZ=${TZ:-UTC}
+    networks:
+      - asidelco-network
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: asidelco-streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+    command: streamlit run src/ui/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    networks:
+      - asidelco-network
+    depends_on:
+      - neo4j
+      - opensearch
+
+volumes:
+  opensearch-data:
+  portainer_data:
+
+networks:
+  cfia-network:
+    driver: bridge
+  asidelco-network:
+    driver: bridge
+

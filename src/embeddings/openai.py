@@ -12,10 +12,9 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
-from tenacity import retry, stop_after_attempt, wait_fixed
+from ..utils.openai_client import get_openai_client
 
 # ────────────────────────── Configuration ────────────────────────── #
 
@@ -92,11 +91,56 @@ def get_summary(doc: Dict[str, Any]) -> str:
     return node
 
 
-@retry(wait=wait_fixed(2), stop=stop_after_attempt(3), reraise=True)
-def get_embedding(text: str, model: str) -> List[float]:
-    """Fetch the embedding from OpenAI."""
-    resp = client.embeddings.create(model=model, input=text)
-    return resp.data[0].embedding  # type: ignore[index]
+# class OpenAIEmbeddings:
+#     def __init__(
+#         self,
+#         api_key: Optional[str] = None,
+#         model: str = "text-embedding-3-small",
+#         base_url: Optional[str] = None,
+#         organization: Optional[str] = None,
+#         **kwargs,
+#     ):
+#         self.api_key = api_key
+#         self.model = model
+#         self.base_url = base_url
+#         self.organization = organization
+#         self._client = None
+#         self.dimension = 1536  # for text-embedding-3-small
+
+#     def _ensure_client(self):
+#         if self._client is None:
+#             self._client = get_openai_client(
+#                 api_key=self.api_key,
+#                 base_url=self.base_url,
+#                 organization=self.organization,
+#             )
+
+#     def embed(self, text: str, **kwargs) -> List[float]:
+#         self._ensure_client()
+#         resp = self._client.embeddings.create(model=self.model, input=text)
+#         return resp.data[0].embedding
+
+#     def embed_batch(self, texts: List[str], batch_size: int = 32, show_progress: bool = False) -> List[List[float]]:
+#         self._ensure_client()
+#         out: List[List[float]] = []
+#         rng = range(0, len(texts), batch_size)
+#         if show_progress:
+#             try:
+#                 from tqdm import tqdm
+#                 rng = tqdm(rng)
+#             except Exception:
+#                 pass
+#         for i in rng:
+#             chunk = texts[i:i+batch_size]
+#             resp = self._client.embeddings.create(model=self.model, input=chunk)
+#             out.extend([d.embedding for d in resp.data])
+#         return out
+
+# @retry(wait=wait_fixed(2), stop=stop_after_attempt(3), reraise=True)
+# def get_embedding(text: str, model: str) -> List[float]:
+#     """Fetch the embedding from OpenAI."""
+#     resp = client.embeddings.create(model=model, input=text)
+#     return resp.data[0].embedding  # type: ignore[index]
 
 # ───────────────────────────── Main ─────────────────────────────── #
 

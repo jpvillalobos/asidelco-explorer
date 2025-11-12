@@ -20,7 +20,7 @@ import requests
 from time import sleep, strftime
 from datetime import datetime
 from bs4 import BeautifulSoup
-from html_to_json_parser import parse_project_html_file   # tu parser local
+from etl.extract.html_to_json import parse_project_html_file   # tu parser local
 
 # ─────────────────────── RUTAS ───────────────────────
 BASE = "/home/jpvillalobos/cloudpipelines.it/projects/cfia-explorer/data/output"
@@ -218,3 +218,15 @@ total_elapsed = time.time() - start
 h, rem = divmod(int(total_elapsed), 3600)
 m, s  = divmod(rem, 60)
 print(f"\nFin: {h}h {m}m {s}s.")
+
+# Move this code block that's at module level (line 87):
+# f for f in os.listdir(DIR_IN_PROY)
+# Into a function, don't execute at import time:
+
+def get_project_files():
+    """Get list of project HTML files."""
+    if os.path.exists(DIR_IN_PROY):
+        return [f for f in os.listdir(DIR_IN_PROY) if f.endswith('.html')]
+    return []
+
+# Remove any code that executes os.listdir() at module level

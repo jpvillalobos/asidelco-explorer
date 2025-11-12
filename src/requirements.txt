@@ -1,29 +1,23 @@
-# Core
-requests>=2.32.0
-beautifulsoup4>=4.12.2
-
-# Data wrangling
-pandas>=2.2.2
-openpyxl>=3.1.2
-
-# Databases / search
-neo4j>=5.20.0
-opensearch-py>=2.4.2
-
-# Embeddings & AI
-sentence-transformers>=2.7.0
-openai>=1.23.0
-
-# Config & env
-pydantic>=2.7.1
-python-dotenv>=1.0.1
-
-# API & UI
-fastapi>=0.110.1
+# Core API + ETL (no torch / sbert)
+fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
-streamlit>=1.34.0
-
-# Dev / quality
-pytest>=8.2.0
-ruff>=0.4.4
-mypy>=1.10.0
+pandas>=2.0.0
+requests>=2.32.0
+pydantic>=2.7.0
+python-dotenv>=1.0.1
+opensearch-py>=2.4.2
+tqdm>=4.66.4
+msal>=1.28.0
+azure-storage-blob>=12.27.1
+openai>=1.23.0
+streamlit>=1.28.0
+python-multipart>=0.0.6
+websockets>=12.0
+click>=8.1.0
+sentence-transformers>=2.2.0
+neo4j>=5.0.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+openpyxl>=3.1.0
+chardet>=5.0.0
+PyYAML>=6.0.1
