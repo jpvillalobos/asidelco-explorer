@@ -151,14 +151,20 @@ class StepRegistry:
 
         try:
             crawler_service = self._get_service('crawler')
+            input_file = kwargs.get('input_file')
             base_url = kwargs['base_url']
             project_url = kwargs.get('project_url')
+            output_dir = kwargs.get('output_dir')
 
             logger.info(f"Starting project crawl: {base_url}")
+            logger.info(f"Input file: {input_file}")
+            logger.info(f"Output directory: {output_dir}")
 
             result = crawler_service.crawl_projects(
+                input_file=input_file,
                 base_url=base_url,
-                project_url=project_url
+                project_url=project_url,
+                output_dir=output_dir
             )
 
             logger.info(f"Crawl completed: {result.get('count', 0)} projects")
@@ -184,16 +190,22 @@ class StepRegistry:
 
         try:
             crawler_service = self._get_service('crawler')
+            input_dir = kwargs.get('input_dir')
             base_url = kwargs['base_url']
             directory_url = kwargs['directory_url']
             max_members = kwargs.get('max_members', 100)
+            output_dir = kwargs.get('output_dir')
 
             logger.info(f"Starting professionals crawl: {directory_url}, max={max_members}")
+            logger.info(f"Input directory: {input_dir}")
+            logger.info(f"Output directory: {output_dir}")
 
             result = crawler_service.crawl_professionals(
+                input_dir=input_dir,
                 base_url=base_url,
                 directory_url=directory_url,
-                max_members=max_members
+                max_members=max_members,
+                output_dir=output_dir
             )
 
             logger.info(f"Crawl completed: {result.get('count', 0)} professionals")

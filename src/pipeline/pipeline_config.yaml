@@ -21,15 +21,19 @@ pipeline:
         - name: crawl_projects
           title: Crawl Projects
           args:
-            base_url: https://projects.example.com
-            project_url: https://projects.example.com/project/123456
+            input_file: data/output/normalized.csv
+            base_url: https://servicios.cfia.or.cr
+            project_url: https://servicios.cfia.or.cr/ConsultaProyecto/
+            output_dir: data/output/projects/html
 
         - name: crawl_professionals
           title: Crawl Professionals
           args:
-            base_url: https://professionals.example.com
-            directory_url: https://professionals.example.com/directory
+            input_dir: data/output/projects/html
+            base_url: https://servicios.cfia.or.cr
+            directory_url: https://servicios.cfia.or.cr/ListadoMiembros/Miembros/
             max_members: 100
+            output_dir: data/output/professionals
 
     - id: transform
       title: Transform

@@ -74,19 +74,19 @@ class Pipeline:
             # Convert relative paths to absolute paths within workspace
             resolved_kwargs = {}
             for key, value in kwargs.items():
-                if isinstance(value, str) and ('file' in key.lower() or 'path' in key.lower()):
+                if isinstance(value, str) and ('file' in key.lower() or 'path' in key.lower() or 'dir' in key.lower()):
                     # Check if it's a relative path
                     if not Path(value).is_absolute():
                         # If it's a simple filename (no subdirectory), place it appropriately
                         value_path = Path(value)
                         if len(value_path.parts) == 1:  # Just a filename
-                            # Output files go to data/output, input files stay as-is
+                            # Output files/dirs go to data/output, input files stay as-is
                             if 'output' in key.lower():
                                 resolved_kwargs[key] = str(self.workspace_dir / 'data' / 'output' / value)
                             else:
                                 resolved_kwargs[key] = str(self.workspace_dir / value)
                         else:
-                            # Path includes subdirectories, use as-is
+                            # Path includes subdirectories, use as-is relative to workspace
                             resolved_kwargs[key] = str(self.workspace_dir / value)
                     else:
                         resolved_kwargs[key] = value
