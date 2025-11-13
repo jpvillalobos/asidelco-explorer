@@ -435,6 +435,10 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             "load_opensearch": StepType.LOAD_OPENSEARCH,
         }
 
+        # Create status placeholders for real-time updates
+        status_container = st.empty()
+        progress_bar = st.empty()
+
         for idx in indices:
             step = steps[idx]
             step_enabled_key = f"enabled_{stage_idx}_{idx}"
@@ -442,8 +446,8 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             # Skip if disabled
             if not st.session_state.step_enabled.get(step_enabled_key, True):
                 step_name = step.get("name", f"step_{idx}")
-                step_title = step.get("title", step_name)
-                step_key = f"{step_name}_{step_title}"
+                step_title_val = step.get("title", step_name)
+                step_key = f"{step_name}_{step_title_val}"
                 st.session_state.step_status[step_key] = {
                     "status": "skipped",
                     "progress": 0,
@@ -452,7 +456,7 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                 run_record["steps"].append({
                     "step_index": idx,
                     "step_name": step_name,
-                    "title": step_title,
+                    "title": step_title_val,
                     "state": "skipped",
                     "start_time": None,
                     "end_time": None,
@@ -466,15 +470,21 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                 break
 
             step_name = step.get("name", f"step_{idx}")
-            step_title = step.get("title", step_name)
-            step_key = f"{step_name}_{step_title}"
+            step_title_val = step.get("title", step_name)
+            step_key = f"{step_name}_{step_title_val}"
             step_args_key = f"args_{stage_idx}_{idx}"
             custom_args = st.session_state.step_args.get(step_args_key, step.get("args", {}))
+
+            # Update status with real-time UI feedback
             st.session_state.step_status[step_key] = {
                 "status": "running",
                 "progress": 0,
-                "message": f"Executing {step_title}..."
+                "message": f"Executing {step_title_val}..."
             }
+
+            # Show current step status
+            status_container.info(f"🔄 Running: {step_title_val}")
+            progress_bar.progress(0)
 
             # Validation
             err = _validate_step_args(workspace, step_name, custom_args)
@@ -484,15 +494,15 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                     "progress": 0,
                     "message": err
                 }
-                st.error(f"❌ {step_title} failed: {err}")
-                _append_log(f"Step '{step_title}' failed: {err}")
+                status_container.error(f"❌ {step_title_val} failed: {err}")
+                _append_log(f"Step '{step_title_val}' failed: {err}")
                 st.session_state.stage_progress[stage_key] = {"status": "failed"}
                 st.session_state.pipeline_running = False
                 # Append to record
                 run_record["steps"].append({
                     "step_index": idx,
                     "step_name": step_name,
-                    "title": step_title,
+                    "title": step_title_val,
                     "state": "failed",
                     "start_time": None,
                     "end_time": None,
@@ -509,45 +519,56 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                 if not step_type:
                     raise ValueError(f"Unknown step type: {step_name}")
 
-                st.info(f"Running: {step_title}")
-                _append_log(f"Step '{step_title}' started")
+                _append_log(f"Step '{step_title_val}' started")
+
+                # Show progress
+                progress_bar.progress(25)
+
+                # Execute step
                 pipeline.add_step(step_type, **custom_args)
-                pipeline.run()  # assuming run executes queued steps; we add one at a time
+                progress_bar.progress(50)
+
+                pipeline.run()
+                progress_bar.progress(100)
 
                 st.session_state.step_status[step_key] = {
                     "status": "completed",
                     "progress": 100,
                     "message": f"✅ Completed successfully"
                 }
-                st.success(f"✅ {step_title} completed")
-                _append_log(f"Step '{step_title}' completed")
+                status_container.success(f"✅ {step_title_val} completed")
+                _append_log(f"Step '{step_title_val}' completed")
 
                 end_t = time.time()
                 end_iso = datetime.now().isoformat(timespec="seconds")
                 run_record["steps"].append({
                     "step_index": idx,
                     "step_name": step_name,
-                    "title": step_title,
+                    "title": step_title_val,
                     "state": "completed",
                     "start_time": start_iso,
                     "end_time": end_iso,
                     "duration": round(end_t - start_t, 2)
                 })
+
+                # Small delay to show completion
+                time.sleep(0.5)
+
             except Exception as e:
                 st.session_state.step_status[step_key] = {
                     "status": "failed",
                     "progress": 0,
                     "message": f"Error: {str(e)}"
                 }
-                st.error(f"❌ {step_title} failed: {str(e)}")
-                _append_log(f"Step '{step_title}' failed: {str(e)}")
+                status_container.error(f"❌ {step_title_val} failed: {str(e)}")
+                _append_log(f"Step '{step_title_val}' failed: {str(e)}")
 
                 end_t = time.time()
                 end_iso = datetime.now().isoformat(timespec="seconds")
                 run_record["steps"].append({
                     "step_index": idx,
                     "step_name": step_name,
-                    "title": step_title,
+                    "title": step_title_val,
                     "state": "failed",
                     "start_time": start_iso,
                     "end_time": end_iso,
@@ -561,12 +582,16 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                 save_execution_history(workspace, st.session_state.execution_history)
                 return False
 
+        # Clear status displays
+        status_container.empty()
+        progress_bar.empty()
+
         # Done or stopped
         if st.session_state.stop_requested:
             st.session_state.stage_progress[stage_key] = {"status": "pending"}
             st.session_state.pipeline_running = False
             _append_log(f"Stage '{stage_title}' stopped by user")
-            st.info(f"Stage '{stage_title}' stopped")
+            st.warning(f"⏹ Stage '{stage_title}' stopped")
         else:
             st.session_state.stage_progress[stage_key] = {"status": "completed"}
             st.session_state.pipeline_running = False
@@ -1021,14 +1046,17 @@ def render_pipeline_config():
 
                 if not is_running:
                     if st.button(f"▶️ Run", key=f"run_stage_{i}", use_container_width=True, type="primary"):
-                        with st.spinner(f"Executing {stage_title}..."):
-                            success = execute_stage(i, stage)
+                        # Execute stage WITHOUT spinner to see real-time updates
+                        _append_log(f"User clicked Run for stage {i}: {stage_title}")
+                        success = execute_stage(i, stage)
                         if success:
                             st.balloons()
+                        # Force rerun to show final state
                         st.rerun()
                 else:
                     if st.button(f"⏹ Stop", key=f"stop_stage_{i}", use_container_width=True):
                         st.session_state.stop_requested = True
+                        _append_log("User requested stop")
                         st.rerun()
             
             st.divider()
@@ -1062,8 +1090,8 @@ def render_pipeline_config():
                 with col2:
                     if failed_indices and not st.session_state.pipeline_running:
                         if st.button("↻ Retry Failed", key=f"retry_failed_{i}", use_container_width=True):
-                            with st.spinner("Retrying failed steps..."):
-                                execute_specific_steps(i, stage, failed_indices)
+                            _append_log(f"User clicked Retry Failed for stage {i}")
+                            execute_specific_steps(i, stage, failed_indices)
                             st.rerun()
                 with col3:
                     # already used above for disable all; keep empty here to keep layout compact
