@@ -155,6 +155,9 @@ class StepRegistry:
             base_url = kwargs['base_url']
             project_url = kwargs.get('project_url')
             output_dir = kwargs.get('output_dir')
+            rate_limit = kwargs.get('rate_limit', 0.5)
+            max_retries = kwargs.get('max_retries', 3)
+            timeout = kwargs.get('timeout', 30)
 
             logger.info(f"Starting project crawl: {base_url}")
             logger.info(f"Input file: {input_file}")
@@ -164,7 +167,10 @@ class StepRegistry:
                 input_file=input_file,
                 base_url=base_url,
                 project_url=project_url,
-                output_dir=output_dir
+                output_dir=output_dir,
+                rate_limit=rate_limit,
+                max_retries=max_retries,
+                timeout=timeout
             )
 
             logger.info(f"Crawl completed: {result.get('count', 0)} projects")
@@ -195,6 +201,9 @@ class StepRegistry:
             directory_url = kwargs['directory_url']
             max_members = kwargs.get('max_members', 100)
             output_dir = kwargs.get('output_dir')
+            rate_limit = kwargs.get('rate_limit', 0.5)
+            max_retries = kwargs.get('max_retries', 3)
+            timeout = kwargs.get('timeout', 30)
 
             logger.info(f"Starting professionals crawl: {directory_url}, max={max_members}")
             logger.info(f"Input directory: {input_dir}")
@@ -205,7 +214,10 @@ class StepRegistry:
                 base_url=base_url,
                 directory_url=directory_url,
                 max_members=max_members,
-                output_dir=output_dir
+                output_dir=output_dir,
+                rate_limit=rate_limit,
+                max_retries=max_retries,
+                timeout=timeout
             )
 
             logger.info(f"Crawl completed: {result.get('count', 0)} professionals")

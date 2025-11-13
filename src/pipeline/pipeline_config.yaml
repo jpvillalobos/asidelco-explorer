@@ -13,7 +13,7 @@ pipeline:
           title: Select Excel Input File
           args:
             input_file: data/input/Ene-Mar25.xlsx
-            output_file: Ene-Mar25_normalized.csv
+            output_file: normalized.csv
 
     - id: crawl
       title: Crawl
@@ -25,6 +25,9 @@ pipeline:
             base_url: https://servicios.cfia.or.cr
             project_url: https://servicios.cfia.or.cr/ConsultaProyecto/
             output_dir: data/output/projects/html
+            rate_limit: 0.5
+            max_retries: 3
+            timeout: 30
 
         - name: crawl_professionals
           title: Crawl Professionals
@@ -34,6 +37,9 @@ pipeline:
             directory_url: https://servicios.cfia.or.cr/ListadoMiembros/Miembros/
             max_members: 100
             output_dir: data/output/professionals
+            rate_limit: 0.5
+            max_retries: 3
+            timeout: 30
 
     - id: transform
       title: Transform

@@ -896,25 +896,106 @@ def render_excel_upload_step(step_data: dict, stage_idx: int, step_idx: int):
         if step_args_key in st.session_state.step_args:
             st.session_state.step_args[step_args_key]["output_file"] = output_file
 
-# Update render_standard_step_config() with smaller fonts
+def _get_workspace_files_and_dirs(workspace_path: Path, pattern: str = "*"):
+    """Get files and directories from workspace matching pattern"""
+    if not workspace_path.exists():
+        return [], []
+
+    files = []
+    dirs = []
+
+    # Search in data/input and data/output
+    search_dirs = [
+        workspace_path / "data" / "input",
+        workspace_path / "data" / "output"
+    ]
+
+    for search_dir in search_dirs:
+        if search_dir.exists():
+            # Get files
+            for item in search_dir.rglob(pattern):
+                if item.is_file():
+                    # Get relative path from workspace
+                    try:
+                        rel_path = item.relative_to(workspace_path)
+                        files.append(str(rel_path))
+                    except ValueError:
+                        pass
+
+            # Get directories (only immediate subdirectories and their children)
+            for item in search_dir.rglob("*"):
+                if item.is_dir() and item != search_dir:
+                    try:
+                        rel_path = item.relative_to(workspace_path)
+                        dirs.append(str(rel_path))
+                    except ValueError:
+                        pass
+
+    return sorted(files), sorted(dirs)
+
+
+def _is_path_argument(arg_name: str, arg_value: str) -> tuple[bool, str]:
+    """Check if argument is a file/directory path and return type"""
+    arg_lower = arg_name.lower()
+
+    # Check for input file
+    if 'input_file' in arg_lower or arg_lower == 'input_file':
+        return True, 'input_file'
+
+    # Check for output file
+    if 'output_file' in arg_lower or arg_lower == 'output_file':
+        return True, 'output_file'
+
+    # Check for input directory
+    if 'input_dir' in arg_lower or arg_lower == 'input_dir' or arg_lower == 'input_directory':
+        return True, 'input_dir'
+
+    # Check for output directory
+    if 'output_dir' in arg_lower or arg_lower == 'output_dir' or arg_lower == 'output_directory':
+        return True, 'output_dir'
+
+    # Check for generic path/file/dir keywords
+    if any(keyword in arg_lower for keyword in ['file', 'path', 'dir', 'directory']):
+        # Try to guess based on value
+        if isinstance(arg_value, str):
+            if 'output' in arg_lower:
+                if any(ext in arg_value for ext in ['.csv', '.json', '.xlsx', '.txt']):
+                    return True, 'output_file'
+                else:
+                    return True, 'output_dir'
+            elif 'input' in arg_lower:
+                if any(ext in arg_value for ext in ['.csv', '.json', '.xlsx', '.txt', '.html']):
+                    return True, 'input_file'
+                else:
+                    return True, 'input_dir'
+
+    return False, ''
+
+
+# Update render_standard_step_config() with workspace file browser
 def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
-    """Render standard step configuration without JSON preview"""
+    """Render standard step configuration with workspace file browser"""
     with st.expander(f"⚙️ Configure", expanded=False):
         args = step_data.get("args", {})
         step_args_key = f"args_{stage_idx}_{step_idx}"
-        
+
         if step_args_key not in st.session_state.step_args:
             st.session_state.step_args[step_args_key] = args.copy()
-        
+
         edited_args = {}
-        
+
         if not args:
             st.info("No parameters")
             return
-        
+
+        # Get workspace path
+        workspace_path = None
+        if st.session_state.current_workspace:
+            workspace_path = Path(st.session_state.current_workspace)
+
         for arg_name, arg_value in args.items():
             arg_input_key = f"arg_{stage_idx}_{step_idx}_{arg_name}"
-            
+
             if isinstance(arg_value, dict):
                 st.markdown(f"**{arg_name}:**")
                 st.json(arg_value, expanded=False)
@@ -930,25 +1011,182 @@ def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
                     key=arg_input_key
                 )
             elif isinstance(arg_value, int):
-                edited_args[arg_name] = st.number_input(
-                    arg_name,
-                    value=arg_value,
-                    key=arg_input_key
-                )
+                # Special handling for specific parameters
+                if arg_name.lower() in ['max_retries', 'max_members']:
+                    edited_args[arg_name] = st.number_input(
+                        arg_name,
+                        value=arg_value,
+                        min_value=1,
+                        max_value=100,
+                        step=1,
+                        key=arg_input_key,
+                        help=f"Number of retry attempts (1-100)" if 'retries' in arg_name.lower() else None
+                    )
+                elif arg_name.lower() == 'timeout':
+                    edited_args[arg_name] = st.number_input(
+                        arg_name,
+                        value=arg_value,
+                        min_value=5,
+                        max_value=300,
+                        step=5,
+                        key=arg_input_key,
+                        help="Request timeout in seconds (5-300)"
+                    )
+                elif arg_name.lower() == 'port':
+                    edited_args[arg_name] = st.number_input(
+                        arg_name,
+                        value=arg_value,
+                        min_value=1,
+                        max_value=65535,
+                        step=1,
+                        key=arg_input_key,
+                        help="Port number (1-65535)"
+                    )
+                else:
+                    edited_args[arg_name] = st.number_input(
+                        arg_name,
+                        value=arg_value,
+                        key=arg_input_key
+                    )
             elif isinstance(arg_value, float):
-                edited_args[arg_name] = st.number_input(
-                    arg_name,
-                    value=arg_value,
-                    format="%.2f",
-                    key=arg_input_key
-                )
+                # Special handling for rate_limit
+                if arg_name.lower() == 'rate_limit':
+                    edited_args[arg_name] = st.number_input(
+                        arg_name,
+                        value=arg_value,
+                        min_value=0.1,
+                        max_value=10.0,
+                        step=0.1,
+                        format="%.1f",
+                        key=arg_input_key,
+                        help="Seconds to wait between requests (0.1-10.0)"
+                    )
+                else:
+                    edited_args[arg_name] = st.number_input(
+                        arg_name,
+                        value=arg_value,
+                        format="%.2f",
+                        key=arg_input_key
+                    )
             else:
-                edited_args[arg_name] = st.text_input(
-                    arg_name,
-                    value=str(arg_value),
-                    key=arg_input_key
-                )
-        
+                # Check if this is a file/directory path argument
+                is_path, path_type = _is_path_argument(arg_name, str(arg_value))
+
+                if is_path and workspace_path and workspace_path.exists():
+                    st.markdown(f"**{arg_name}:**")
+
+                    # Selection mode
+                    selection_mode = st.radio(
+                        "Selection mode:",
+                        ["Browse workspace", "Manual entry"],
+                        horizontal=True,
+                        key=f"{arg_input_key}_mode",
+                        label_visibility="collapsed"
+                    )
+
+                    if selection_mode == "Browse workspace":
+                        if path_type == 'input_file':
+                            # Show file browser for input files
+                            files, _ = _get_workspace_files_and_dirs(workspace_path, "*")
+                            if files:
+                                # Filter to common input file types
+                                input_files = [f for f in files if any(f.endswith(ext) for ext in ['.csv', '.xlsx', '.json', '.html', '.txt'])]
+                                if input_files:
+                                    selected = st.selectbox(
+                                        f"Select {arg_name}:",
+                                        options=[""] + input_files,
+                                        index=input_files.index(str(arg_value)) + 1 if str(arg_value) in input_files else 0,
+                                        key=f"{arg_input_key}_select",
+                                        label_visibility="collapsed"
+                                    )
+                                    edited_args[arg_name] = selected if selected else str(arg_value)
+                                else:
+                                    st.warning("⚠️ No input files found in workspace")
+                                    edited_args[arg_name] = st.text_input(
+                                        "Path:",
+                                        value=str(arg_value),
+                                        key=f"{arg_input_key}_fallback",
+                                        label_visibility="collapsed"
+                                    )
+                            else:
+                                st.warning("⚠️ No files found in workspace")
+                                edited_args[arg_name] = st.text_input(
+                                    "Path:",
+                                    value=str(arg_value),
+                                    key=f"{arg_input_key}_fallback",
+                                    label_visibility="collapsed"
+                                )
+
+                        elif path_type == 'input_dir':
+                            # Show directory browser for input directories
+                            _, dirs = _get_workspace_files_and_dirs(workspace_path)
+                            if dirs:
+                                # Add common output directories
+                                all_dirs = dirs + ["data/output/projects/html", "data/output/professionals/html"]
+                                all_dirs = sorted(list(set(all_dirs)))
+                                selected = st.selectbox(
+                                    f"Select {arg_name}:",
+                                    options=[""] + all_dirs,
+                                    index=all_dirs.index(str(arg_value)) + 1 if str(arg_value) in all_dirs else 0,
+                                    key=f"{arg_input_key}_select",
+                                    label_visibility="collapsed"
+                                )
+                                edited_args[arg_name] = selected if selected else str(arg_value)
+                            else:
+                                st.info("ℹ️ Directory will be created if it doesn't exist")
+                                edited_args[arg_name] = st.text_input(
+                                    "Path:",
+                                    value=str(arg_value),
+                                    key=f"{arg_input_key}_fallback",
+                                    label_visibility="collapsed"
+                                )
+
+                        elif path_type in ['output_file', 'output_dir']:
+                            # For output paths, just show text input with helper text
+                            st.caption("💡 Output path (will be created if needed)")
+                            edited_args[arg_name] = st.text_input(
+                                "Path:",
+                                value=str(arg_value),
+                                key=f"{arg_input_key}_output",
+                                label_visibility="collapsed"
+                            )
+
+                        else:
+                            # Generic path handling
+                            files, dirs = _get_workspace_files_and_dirs(workspace_path)
+                            all_paths = files + dirs
+                            if all_paths:
+                                selected = st.selectbox(
+                                    f"Select {arg_name}:",
+                                    options=[""] + all_paths,
+                                    index=all_paths.index(str(arg_value)) + 1 if str(arg_value) in all_paths else 0,
+                                    key=f"{arg_input_key}_select",
+                                    label_visibility="collapsed"
+                                )
+                                edited_args[arg_name] = selected if selected else str(arg_value)
+                            else:
+                                edited_args[arg_name] = st.text_input(
+                                    "Path:",
+                                    value=str(arg_value),
+                                    key=f"{arg_input_key}_fallback",
+                                    label_visibility="collapsed"
+                                )
+                    else:
+                        # Manual entry mode
+                        edited_args[arg_name] = st.text_input(
+                            "Path:",
+                            value=str(arg_value),
+                            key=f"{arg_input_key}_manual",
+                            label_visibility="collapsed"
+                        )
+                else:
+                    # Regular text input for non-path arguments
+                    edited_args[arg_name] = st.text_input(
+                        arg_name,
+                        value=str(arg_value),
+                        key=arg_input_key
+                    )
+
         st.session_state.step_args[step_args_key] = edited_args
 
 # Update render_pipeline_config() stage header

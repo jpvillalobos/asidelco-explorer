@@ -36,6 +36,9 @@ class CrawlerService:
         project_url: Optional[str] = None,
         input_file: Optional[str] = None,
         output_dir: Optional[str] = None,
+        rate_limit: float = 0.5,
+        max_retries: int = 3,
+        timeout: int = 30,
         context: Optional[object] = None
     ) -> Dict[str, Any]:
         """
@@ -46,12 +49,16 @@ class CrawlerService:
             project_url: Specific project URL template
             input_file: Path to Excel file with project IDs
             output_dir: Directory to save HTML files
+            rate_limit: Seconds to wait between requests (default: 0.5)
+            max_retries: Maximum retry attempts for failed requests (default: 3)
+            timeout: Request timeout in seconds (default: 30)
             context: Optional context for progress reporting
 
         Returns:
             Dictionary with crawl results
         """
         logger.info(f"Starting project crawl: {base_url}")
+        logger.info(f"Crawler settings - Rate limit: {rate_limit}s, Max retries: {max_retries}, Timeout: {timeout}s")
 
         # Resolve paths
         if not output_dir:
@@ -60,6 +67,25 @@ class CrawlerService:
             output_dir = Path(output_dir)
 
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build hash set of already crawled project IDs from existing files
+        logger.info(f"Scanning output directory for existing files: {output_dir}")
+        crawled_ids = set()
+        if output_dir.exists():
+            existing_files = list(output_dir.glob("*.html"))
+            for file in existing_files:
+                # Extract project ID from filename (e.g., "12345.html" -> "12345")
+                try:
+                    pid = file.stem  # Get filename without extension
+                    crawled_ids.add(pid)
+                except Exception as e:
+                    logger.warning(f"Could not parse filename {file.name}: {e}")
+
+            logger.info(f"Found {len(crawled_ids)} already-crawled projects in output directory")
+            if len(crawled_ids) > 0:
+                logger.info(f"These projects will be skipped to avoid re-crawling")
+        else:
+            logger.info(f"Output directory is empty - no existing files to skip")
 
         # Load project IDs
         project_ids = []
@@ -86,7 +112,7 @@ class CrawlerService:
             else:
                 # Try first column
                 project_ids = df.iloc[:, 0].dropna().tolist()
-            logger.info(f"Loaded {len(project_ids)} project IDs")
+            logger.info(f"Loaded {len(project_ids)} project IDs from input file")
 
         # Initialize form state
         url = project_url or f"{base_url}/ConsultaProyecto/"
@@ -108,19 +134,40 @@ class CrawlerService:
             }
 
         # Track results
-        seen_ids = defaultdict(int)
         success_count = 0
         error_count = 0
+        skipped_count = 0
         total_projects = len(project_ids)
+
+        logger.info(f"Starting crawl of {total_projects} projects")
+        logger.info("="*80)
 
         # Crawl each project
         for index, pid in enumerate(project_ids, start=1):
+            # Validate and normalize project ID
             try:
                 pid = str(int(pid))
             except (ValueError, TypeError):
-                logger.warning(f"Invalid project ID format: {pid}")
+                logger.warning(f"[{index}/{total_projects}] Invalid project ID format: {pid} - skipping")
                 error_count += 1
                 continue
+
+            # Check if already crawled using hash set
+            if pid in crawled_ids:
+                logger.info(f"[{index}/{total_projects}] Skipping project ID '{pid}' - already crawled (found in hash set)")
+                skipped_count += 1
+                # Update progress
+                if context:
+                    context.report_progress(
+                        index,
+                        total_projects,
+                        f"Skipped project {pid} (already crawled) ({index}/{total_projects})",
+                        {"success": success_count, "errors": error_count, "skipped": skipped_count}
+                    )
+                continue
+
+            # Log start of crawl for this project
+            logger.info(f"[{index}/{total_projects}] Crawling project ID: {pid}")
 
             # Update progress
             if context:
@@ -128,13 +175,10 @@ class CrawlerService:
                     index,
                     total_projects,
                     f"Crawling project {pid} ({index}/{total_projects})",
-                    {"success": success_count, "errors": error_count}
+                    {"success": success_count, "errors": error_count, "skipped": skipped_count}
                 )
 
-            # Handle duplicate IDs
-            seen_ids[pid] += 1
-            suffix = f"_{seen_ids[pid]}" if seen_ids[pid] > 1 else ""
-            filename = output_dir / f"{pid}{suffix}.html"
+            filename = output_dir / f"{pid}.html"
 
             # Prepare payload
             payload = {
@@ -152,43 +196,57 @@ class CrawlerService:
             }
 
             # Attempt request with retries
-            max_retries = 3
             attempt = 0
             success = False
 
             while attempt < max_retries and not success:
                 attempt += 1
                 try:
-                    response = self.session.post(url, data=payload, headers=self.headers, timeout=30)
+                    response = self.session.post(url, data=payload, headers=self.headers, timeout=timeout)
 
                     if response.status_code == 200:
                         with open(filename, "w", encoding="utf-8") as f:
                             f.write(response.text)
-                        logger.debug(f"Saved project {pid} to {filename}")
+
+                        # Add to hash set to track as crawled
+                        crawled_ids.add(pid)
+
+                        logger.info(f"[{index}/{total_projects}] ✓ Successfully crawled project ID: {pid} → {filename.name}")
                         success_count += 1
                         success = True
                     else:
-                        logger.warning(f"HTTP {response.status_code} for project {pid}")
+                        logger.warning(f"[{index}/{total_projects}] HTTP {response.status_code} for project {pid} (attempt {attempt}/{max_retries})")
 
                 except Exception as e:
-                    logger.error(f"Attempt {attempt} failed for project {pid}: {e}")
+                    logger.error(f"[{index}/{total_projects}] Attempt {attempt}/{max_retries} failed for project {pid}: {e}")
                     if attempt < max_retries:
-                        time.sleep(2 ** attempt)  # Exponential backoff
+                        backoff_time = 2 ** attempt
+                        logger.info(f"[{index}/{total_projects}] Waiting {backoff_time}s before retry (exponential backoff)...")
+                        time.sleep(backoff_time)
 
             if not success:
                 error_count += 1
-                logger.error(f"Failed to crawl project {pid} after {max_retries} attempts")
+                logger.error(f"[{index}/{total_projects}] ✗ Failed to crawl project {pid} after {max_retries} attempts")
 
             # Rate limiting
-            time.sleep(0.5)
+            time.sleep(rate_limit)
 
-        logger.info(f"Project crawl completed: {success_count} success, {error_count} errors")
+        # Final summary
+        logger.info("="*80)
+        logger.info(f"Project crawl completed")
+        logger.info(f"  Total projects in input: {total_projects}")
+        logger.info(f"  ✓ Successfully crawled: {success_count}")
+        logger.info(f"  ↷ Skipped (already crawled): {skipped_count}")
+        logger.info(f"  ✗ Errors: {error_count}")
+        logger.info(f"  Output directory: {output_dir}")
+        logger.info("="*80)
 
         return {
             "count": success_count,
             "output_dir": str(output_dir),
             "total_projects": total_projects,
-            "errors": error_count
+            "errors": error_count,
+            "skipped": skipped_count
         }
 
     def crawl_professionals(
@@ -198,6 +256,9 @@ class CrawlerService:
         max_members: int = 100,
         input_dir: Optional[str] = None,
         output_dir: Optional[str] = None,
+        rate_limit: float = 0.5,
+        max_retries: int = 3,
+        timeout: int = 30,
         context: Optional[object] = None
     ) -> Dict[str, Any]:
         """
@@ -209,6 +270,9 @@ class CrawlerService:
             max_members: Maximum number of members to crawl
             input_dir: Directory with project HTML files to extract carnets
             output_dir: Directory to save professional HTML/JSON files
+            rate_limit: Seconds to wait between requests (default: 0.5)
+            max_retries: Maximum retry attempts for failed requests (default: 3)
+            timeout: Request timeout in seconds (default: 30)
             context: Optional context for progress reporting
 
         Returns:
