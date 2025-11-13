@@ -396,7 +396,6 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
     """
     try:
         from pipeline.pipeline import Pipeline
-        from pipeline.steps import StepType
 
         # Ensure workspace exists
         workspace = create_workspace_if_needed()
@@ -424,15 +423,15 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             "steps": []
         }
 
-        # Map step names to StepType
+        # Map step names to their string identifiers (matching registry keys)
         step_type_map = {
-            "normalize_csv": StepType.NORMALIZE,
-            "crawl_projects": StepType.CRAWL_PROJECTS,
-            "crawl_professionals": StepType.CRAWL_PROFESSIONALS,
-            "parse_html": StepType.PARSE_HTML,
-            "transform_data": StepType.TRANSFORM,
-            "generate_embeddings": StepType.GENERATE_EMBEDDINGS,
-            "load_opensearch": StepType.LOAD_OPENSEARCH,
+            "normalize_csv": "normalize_csv",
+            "crawl_projects": "crawl_projects",
+            "crawl_professionals": "crawl_professionals",
+            "parse_html": "parse_html",
+            "transform_data": "transform_data",
+            "generate_embeddings": "generate_embeddings",
+            "load_opensearch": "load_opensearch",
         }
 
         # Create status placeholders for real-time updates
@@ -861,7 +860,7 @@ def render_excel_upload_step(step_data: dict, stage_idx: int, step_idx: int):
                 
                 st.session_state.step_args[step_args_key] = {
                     "input_file": f"data/input/{uploaded_file.name}",
-                    "output_file": args.get("output_file", "normalized.csv")
+                    "output_file": args.get("output_file", "data/output/normalized.csv")
                 }
                 
                 st.info(f"📊 Size: {uploaded_file.size / (1024*1024):.2f} MB")
@@ -877,7 +876,7 @@ def render_excel_upload_step(step_data: dict, stage_idx: int, step_idx: int):
                 if selected_file:
                     st.session_state.step_args[step_args_key] = {
                         "input_file": f"data/input/{selected_file}",
-                        "output_file": args.get("output_file", "normalized.csv")
+                        "output_file": args.get("output_file", "data/output/normalized.csv")
                     }
                     
                     file_path = input_dir / selected_file
@@ -889,7 +888,7 @@ def render_excel_upload_step(step_data: dict, stage_idx: int, step_idx: int):
         st.markdown("**Output:**")
         output_file = st.text_input(
             "Filename:",
-            value=st.session_state.step_args[step_args_key].get("output_file", "normalized.csv"),
+            value=st.session_state.step_args[step_args_key].get("output_file", "data/output/normalized.csv"),
             key=f"output_file_{stage_idx}_{step_idx}",
             label_visibility="collapsed"
         )
