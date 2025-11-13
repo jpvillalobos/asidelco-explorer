@@ -1,4 +1,22 @@
 """
+Lightweight services package initializer.
+
+Avoid importing submodules here to prevent side effects (I/O on import) and
+circular imports. Import concrete services where needed.
+"""
+__all__ = [
+    "crawler_service",
+    "csv_service",
+    "embedding_service",
+    "neo4j_service",
+    "opensearch_service",
+    "parser_service",
+    "storage_service",
+    "transform_service",
+]
+# No side-effect imports here.
+
+"""
 Services module with graceful error handling
 """
 import logging

@@ -34,6 +34,8 @@ if str(SRC_DIR) not in sys.path:
 from pipeline.workspace import WorkspaceManager
 from pipeline.config import load_base_pipeline_config
 from pipeline.progress import ProgressTracker, ProgressEvent, ExecutionState
+# from pipeline.pipeline import Pipeline
+# from pipeline.steps import StepType
 
 # Update CSS for better font sizes
 st.markdown("""
@@ -301,6 +303,118 @@ def create_workspace_if_needed():
             st.error(f"Failed to create workspace: {e}")
             return None
     return st.session_state.current_workspace
+
+# Add this new function after create_workspace_if_needed()
+def execute_stage(stage_idx: int, stage_data: dict):
+    """Execute a pipeline stage with selected steps"""
+    try:
+        # Lazy imports to prevent side-effects at app load time
+        from pipeline.pipeline import Pipeline
+        from pipeline.steps import StepType
+        # Ensure workspace exists
+        workspace = create_workspace_if_needed()
+        if not workspace:
+            st.error("Failed to create workspace")
+            return False
+        
+        # Initialize pipeline
+        pipeline = Pipeline(workspace_dir=workspace)
+        
+        # Get stage info
+        stage_title = stage_data.get("title", f"Stage {stage_idx}")
+        steps = stage_data.get("steps", [])
+        
+        st.session_state.pipeline_running = True
+        stage_key = f"stage_{stage_idx}"
+        
+        # Execute each enabled step
+        for step_idx, step in enumerate(steps):
+            step_enabled_key = f"enabled_{stage_idx}_{step_idx}"
+            
+            # Skip if step is disabled
+            if not st.session_state.step_enabled.get(step_enabled_key, True):
+                step_name = step.get("name", f"step_{step_idx}")
+                step_title = step.get("title", step_name)
+                step_key = f"{step_name}_{step_title}"
+                st.session_state.step_status[step_key] = {
+                    "status": "skipped",
+                    "progress": 0,
+                    "message": "Step skipped by user"
+                }
+                continue
+            
+            step_name = step.get("name", f"step_{step_idx}")
+            step_title = step.get("title", step_name)
+            step_key = f"{step_name}_{step_title}"
+            
+            # Get custom args if any
+            step_args_key = f"args_{stage_idx}_{step_idx}"
+            custom_args = st.session_state.step_args.get(step_args_key, step.get("args", {}))
+            
+            # Update status to running
+            st.session_state.step_status[step_key] = {
+                "status": "running",
+                "progress": 0,
+                "message": f"Executing {step_title}..."
+            }
+            
+            try:
+                # Map step names to StepType
+                step_type_map = {
+                    "normalize_csv": StepType.NORMALIZE,
+                    "crawl_projects": StepType.CRAWL_PROJECTS,
+                    "crawl_professionals": StepType.CRAWL_PROFESSIONALS,
+                    "parse_html": StepType.PARSE_HTML,
+                    "transform_data": StepType.TRANSFORM,
+                    "generate_embeddings": StepType.GENERATE_EMBEDDINGS,
+                    "load_opensearch": StepType.LOAD_OPENSEARCH,
+                }
+                
+                step_type = step_type_map.get(step_name)
+                
+                if not step_type:
+                    raise ValueError(f"Unknown step type: {step_name}")
+                
+                # Execute the step
+                st.info(f"Running: {step_title}")
+                pipeline.add_step(step_type, **custom_args)
+                result = pipeline.run()
+                
+                # Update status to completed
+                st.session_state.step_status[step_key] = {
+                    "status": "completed",
+                    "progress": 100,
+                    "message": f"✅ Completed successfully"
+                }
+                
+                st.success(f"✅ {step_title} completed")
+                
+            except Exception as e:
+                # Update status to failed
+                st.session_state.step_status[step_key] = {
+                    "status": "failed",
+                    "progress": 0,
+                    "message": f"Error: {str(e)}"
+                }
+                st.error(f"❌ {step_title} failed: {str(e)}")
+                
+                # Stop execution on failure
+                st.session_state.stage_progress[stage_key] = {"status": "failed"}
+                st.session_state.pipeline_running = False
+                return False
+        
+        # Mark stage as completed
+        st.session_state.stage_progress[stage_key] = {"status": "completed"}
+        st.session_state.pipeline_running = False
+        st.success(f"🎉 Stage '{stage_title}' completed successfully!")
+        return True
+        
+    except Exception as e:
+        st.error(f"Stage execution failed: {str(e)}")
+        st.session_state.pipeline_running = False
+        stage_key = f"stage_{stage_idx}"
+        st.session_state.stage_progress[stage_key] = {"status": "failed"}
+        return False
 
 # Update render_workspace_section() to handle no workspace
 def render_workspace_section():
@@ -640,7 +754,13 @@ def render_pipeline_config():
         enabled_steps = sum(1 for key, val in st.session_state.step_enabled.items() if val)
         st.metric("Enabled", f"{enabled_steps}/{total_steps}")
     
-    st.caption(f"📄 {cfg_path}")
+    # Show relative path if it's in the project
+    if cfg_path:
+        try:
+            relative_path = cfg_path.relative_to(Path.cwd())
+            st.caption(f"📄 Config: {relative_path}")
+        except ValueError:
+            st.caption(f"📄 Config: {cfg_path}")
     
     if "description" in pipeline_info:
         with st.expander("ℹ️ Description", expanded=False):
@@ -648,7 +768,6 @@ def render_pipeline_config():
     
     st.divider()
     
-    # ...existing code for tabs...
     if not stages:
         st.warning("No stages defined")
         return
@@ -676,7 +795,7 @@ def render_pipeline_config():
             stage_title = stage.get("title", f"Stage {i+1}")
             steps = stage.get("steps", [])
             
-            # Stage header - smaller
+            # Stage header
             col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
                 st.markdown(f"### {stage_title}")
@@ -689,15 +808,18 @@ def render_pipeline_config():
                 stage_key = f"stage_{i}"
                 stage_info = st.session_state.stage_progress.get(stage_key, {"status": "pending"})
                 
-                if stage_info.get("status") != "running":
+                # Disable run button if already running
+                is_running = stage_info.get("status") == "running" or st.session_state.pipeline_running
+                
+                if not is_running:
                     if st.button(f"▶️ Run", key=f"run_stage_{i}", use_container_width=True, type="primary"):
-                        # Create workspace if needed
-                        workspace = create_workspace_if_needed()
-                        if workspace:
-                            st.session_state.stage_progress[stage_key] = {"status": "running"}
-                            st.session_state.pipeline_running = True
-                            st.success(f"Starting {stage_title}...")
-                            st.rerun()
+                        # Execute the stage
+                        with st.spinner(f"Executing {stage_title}..."):
+                            success = execute_stage(i, stage)
+                        
+                        if success:
+                            st.balloons()
+                        st.rerun()
                 else:
                     if st.button(f"⏸️ Stop", key=f"pause_stage_{i}", use_container_width=True):
                         st.session_state.stage_progress[stage_key] = {"status": "pending"}

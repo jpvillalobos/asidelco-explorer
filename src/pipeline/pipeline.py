@@ -9,7 +9,7 @@ from datetime import datetime
 from .config import PipelineConfig, StageConfig, StepConfig, load_pipeline_config, resolve_variables
 from .registry import get_registry
 from .progress import ProgressTracker
-from services.storage_service import WorkspaceManager
+from pipeline.workspace import WorkspaceManager
 
 
 class PipelineExecutor:

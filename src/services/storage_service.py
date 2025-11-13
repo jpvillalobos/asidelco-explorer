@@ -7,6 +7,8 @@ from pathlib import Path
 import json
 import pandas as pd
 import sys
+import os
+from datetime import datetime
 
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -160,3 +162,53 @@ class StorageService:
         """List files in directory"""
         search_dir = self.base_path / subdirectory if subdirectory else self.base_path
         return [str(p) for p in search_dir.glob(pattern)]
+
+
+class WorkspaceManager:
+    """Manages workspace directories for pipeline executions"""
+    
+    def __init__(self, base_dir: str = "workspaces"):
+        self.base_dir = Path(base_dir)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+    
+    def create_workspace(self, name: Optional[str] = None) -> Path:
+        """Create a new workspace directory"""
+        if name is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            name = f"pipeline_{timestamp}_workdir"
+        
+        workspace_path = self.base_dir / name
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        
+        # Create subdirectories
+        (workspace_path / "data").mkdir(exist_ok=True)
+        (workspace_path / "logs").mkdir(exist_ok=True)
+        (workspace_path / "temp").mkdir(exist_ok=True)
+        
+        # Create metadata
+        metadata = {
+            "created_at": datetime.now().isoformat(),
+            "name": name,
+            "status": "active"
+        }
+        
+        with open(workspace_path / "workspace_metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        
+        return workspace_path
+    
+    def get_workspace(self, name: str) -> Optional[Path]:
+        """Get workspace path if it exists"""
+        workspace_path = self.base_dir / name
+        return workspace_path if workspace_path.exists() else None
+    
+    def list_workspaces(self) -> list[Dict[str, Any]]:
+        """List all workspaces"""
+        workspaces = []
+        for item in self.base_dir.iterdir():
+            if item.is_dir() and (item / "workspace_metadata.json").exists():
+                with open(item / "workspace_metadata.json", "r") as f:
+                    metadata = json.load(f)
+                    metadata["path"] = str(item)
+                    workspaces.append(metadata)
+        return workspaces
