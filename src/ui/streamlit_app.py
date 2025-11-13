@@ -13,6 +13,17 @@ from enum import Enum
 
 import streamlit as st
 
+# Try to use charts if Plotly is available
+try:
+    from ui.components.charts import (
+        render_progress_gauge,
+        render_step_distribution,
+        render_pipeline_timeline,
+    )
+    _charts_available = True
+except Exception:
+    _charts_available = False
+
 # Must be the first Streamlit command
 if "_page_configured" not in st.session_state:
     try:
@@ -128,6 +139,14 @@ def initialize_session_state():
         st.session_state.step_enabled = {}
     if 'step_args' not in st.session_state:
         st.session_state.step_args = {}
+    # New: runtime logs, history and stop flag
+    if 'pipeline_logs' not in st.session_state:
+        st.session_state.pipeline_logs = []
+    if 'execution_history' not in st.session_state:
+        # list of runs per workspace
+        st.session_state.execution_history = []
+    if 'stop_requested' not in st.session_state:
+        st.session_state.stop_requested = False
 
 
 def get_workspace_stats(ws_path: str) -> Dict[str, Any]:
@@ -182,6 +201,57 @@ def get_workspace_stats(ws_path: str) -> Dict[str, Any]:
     return stats
 
 
+# Helper: execution history IO
+def _history_paths(ws_path_str: str):
+    ws = Path(ws_path_str)
+    logs_dir = ws / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    exec_file = logs_dir / "executions.json"
+    return logs_dir, exec_file
+
+def load_execution_history(ws_path_str: str) -> List[Dict[str, Any]]:
+    try:
+        _, exec_file = _history_paths(ws_path_str)
+        if exec_file.exists():
+            with open(exec_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_execution_history(ws_path_str: str, history: List[Dict[str, Any]]):
+    try:
+        _, exec_file = _history_paths(ws_path_str)
+        with open(exec_file, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _append_log(msg: str):
+    ts = datetime.now().strftime("%H:%M:%S")
+    st.session_state.pipeline_logs.append(f"[{ts}] {msg}")
+
+def _validate_step_args(workspace: str, step_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """
+    Basic validation for common patterns.
+    Returns None if OK; error string otherwise.
+    """
+    ws = Path(workspace)
+    # Validate input_file exists when provided
+    input_file = args.get("input_file")
+    if input_file:
+        f = ws / input_file
+        if not f.exists():
+            return f"Input file not found: {input_file}"
+    # Specific checks
+    if step_name == "normalize_csv":
+        if not input_file:
+            return "An input_file is required for normalization"
+        if not args.get("output_file"):
+            return "An output_file is required for normalization"
+    return None
+
+
 def render_sidebar():
     """Render sidebar with quick guide and system info"""
     with st.sidebar:
@@ -203,8 +273,12 @@ def render_sidebar():
         
         # Files loaded
         st.markdown(f"**Files Loaded:** {st.session_state.files_loaded}")
-        
-        # Steps selected
+
+        # Steps selected (enabled)
+        try:
+            st.session_state.steps_selected = sum(1 for k, v in st.session_state.step_enabled.items() if v)
+        except Exception:
+            pass
         st.markdown(f"**Steps Selected:** {st.session_state.steps_selected}")
         
         st.divider()
@@ -269,6 +343,8 @@ def render_workspace_selector():
             # Mark that new workspace will be created on pipeline start
             st.session_state.workspace_needs_creation = True
             st.session_state.current_workspace = None
+            st.session_state.execution_history = []
+            st.session_state.pipeline_logs = []
             st.info("ℹ️ New workspace will be created when pipeline starts")
         else:
             # Load existing workspace
@@ -278,6 +354,9 @@ def render_workspace_selector():
                     wm.load_workspace(selected_path)
                     st.session_state.current_workspace = selected_path
                     st.session_state.workspace_needs_creation = False
+                    # Load execution history for this workspace
+                    st.session_state.execution_history = load_execution_history(selected_path)
+                    st.session_state.pipeline_logs = []
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to load workspace: {e}")
@@ -291,49 +370,78 @@ def create_workspace_if_needed():
         workspaces_root = project_root / "workspaces"
         workspaces_root.mkdir(parents=True, exist_ok=True)
         ws_path = workspaces_root / f"Ene-Mar25_{ts}_workdir"
-        ws_path.mkdir(parents=True, exist_ok=True)
-        
+        # Ensure standard subdirs
+        (ws_path / "data" / "input").mkdir(parents=True, exist_ok=True)
+        (ws_path / "data" / "output").mkdir(parents=True, exist_ok=True)
+        (ws_path / "logs").mkdir(parents=True, exist_ok=True)
+        (ws_path / "temp").mkdir(parents=True, exist_ok=True)
+
         try:
             wm = st.session_state.workspace_manager
             wm.load_workspace(str(ws_path))
             st.session_state.current_workspace = str(ws_path)
             st.session_state.workspace_needs_creation = False
+            # Initialize empty history
+            save_execution_history(str(ws_path), [])
+            st.session_state.execution_history = []
             return str(ws_path)
         except Exception as e:
             st.error(f"Failed to create workspace: {e}")
             return None
     return st.session_state.current_workspace
 
-# Add this new function after create_workspace_if_needed()
-def execute_stage(stage_idx: int, stage_data: dict):
-    """Execute a pipeline stage with selected steps"""
+def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List[int]] = None) -> bool:
+    """
+    Internal executor used by execute_stage and retry handlers.
+    """
     try:
-        # Lazy imports to prevent side-effects at app load time
         from pipeline.pipeline import Pipeline
         from pipeline.steps import StepType
+
         # Ensure workspace exists
         workspace = create_workspace_if_needed()
         if not workspace:
             st.error("Failed to create workspace")
             return False
-        
-        # Initialize pipeline
+
         pipeline = Pipeline(workspace_dir=workspace)
-        
-        # Get stage info
         stage_title = stage_data.get("title", f"Stage {stage_idx}")
         steps = stage_data.get("steps", [])
-        
+        indices = step_indices if step_indices is not None else list(range(len(steps)))
+
         st.session_state.pipeline_running = True
+        st.session_state.stop_requested = False
         stage_key = f"stage_{stage_idx}"
-        
-        # Execute each enabled step
-        for step_idx, step in enumerate(steps):
-            step_enabled_key = f"enabled_{stage_idx}_{step_idx}"
-            
-            # Skip if step is disabled
+        st.session_state.stage_progress[stage_key] = {"status": "running"}
+        _append_log(f"Stage '{stage_title}' started")
+
+        # Prepare run record
+        run_record = {
+            "workspace": workspace,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "stage_index": stage_idx,
+            "stage_title": stage_title,
+            "steps": []
+        }
+
+        # Map step names to StepType
+        step_type_map = {
+            "normalize_csv": StepType.NORMALIZE,
+            "crawl_projects": StepType.CRAWL_PROJECTS,
+            "crawl_professionals": StepType.CRAWL_PROFESSIONALS,
+            "parse_html": StepType.PARSE_HTML,
+            "transform_data": StepType.TRANSFORM,
+            "generate_embeddings": StepType.GENERATE_EMBEDDINGS,
+            "load_opensearch": StepType.LOAD_OPENSEARCH,
+        }
+
+        for idx in indices:
+            step = steps[idx]
+            step_enabled_key = f"enabled_{stage_idx}_{idx}"
+
+            # Skip if disabled
             if not st.session_state.step_enabled.get(step_enabled_key, True):
-                step_name = step.get("name", f"step_{step_idx}")
+                step_name = step.get("name", f"step_{idx}")
                 step_title = step.get("title", step_name)
                 step_key = f"{step_name}_{step_title}"
                 st.session_state.step_status[step_key] = {
@@ -341,80 +449,153 @@ def execute_stage(stage_idx: int, stage_data: dict):
                     "progress": 0,
                     "message": "Step skipped by user"
                 }
+                run_record["steps"].append({
+                    "step_index": idx,
+                    "step_name": step_name,
+                    "title": step_title,
+                    "state": "skipped",
+                    "start_time": None,
+                    "end_time": None,
+                    "duration": None
+                })
                 continue
-            
-            step_name = step.get("name", f"step_{step_idx}")
+
+            # Stop requested?
+            if st.session_state.stop_requested:
+                _append_log(f"Stop requested. Aborting stage '{stage_title}' after current step.")
+                break
+
+            step_name = step.get("name", f"step_{idx}")
             step_title = step.get("title", step_name)
             step_key = f"{step_name}_{step_title}"
-            
-            # Get custom args if any
-            step_args_key = f"args_{stage_idx}_{step_idx}"
+            step_args_key = f"args_{stage_idx}_{idx}"
             custom_args = st.session_state.step_args.get(step_args_key, step.get("args", {}))
-            
-            # Update status to running
             st.session_state.step_status[step_key] = {
                 "status": "running",
                 "progress": 0,
                 "message": f"Executing {step_title}..."
             }
-            
-            try:
-                # Map step names to StepType
-                step_type_map = {
-                    "normalize_csv": StepType.NORMALIZE,
-                    "crawl_projects": StepType.CRAWL_PROJECTS,
-                    "crawl_professionals": StepType.CRAWL_PROFESSIONALS,
-                    "parse_html": StepType.PARSE_HTML,
-                    "transform_data": StepType.TRANSFORM,
-                    "generate_embeddings": StepType.GENERATE_EMBEDDINGS,
-                    "load_opensearch": StepType.LOAD_OPENSEARCH,
+
+            # Validation
+            err = _validate_step_args(workspace, step_name, custom_args)
+            if err:
+                st.session_state.step_status[step_key] = {
+                    "status": "failed",
+                    "progress": 0,
+                    "message": err
                 }
-                
+                st.error(f"❌ {step_title} failed: {err}")
+                _append_log(f"Step '{step_title}' failed: {err}")
+                st.session_state.stage_progress[stage_key] = {"status": "failed"}
+                st.session_state.pipeline_running = False
+                # Append to record
+                run_record["steps"].append({
+                    "step_index": idx,
+                    "step_name": step_name,
+                    "title": step_title,
+                    "state": "failed",
+                    "start_time": None,
+                    "end_time": None,
+                    "duration": None
+                })
+                st.session_state.execution_history.append(run_record)
+                save_execution_history(workspace, st.session_state.execution_history)
+                return False
+
+            start_t = time.time()
+            start_iso = datetime.now().isoformat(timespec="seconds")
+            try:
                 step_type = step_type_map.get(step_name)
-                
                 if not step_type:
                     raise ValueError(f"Unknown step type: {step_name}")
-                
-                # Execute the step
+
                 st.info(f"Running: {step_title}")
+                _append_log(f"Step '{step_title}' started")
                 pipeline.add_step(step_type, **custom_args)
-                result = pipeline.run()
-                
-                # Update status to completed
+                pipeline.run()  # assuming run executes queued steps; we add one at a time
+
                 st.session_state.step_status[step_key] = {
                     "status": "completed",
                     "progress": 100,
                     "message": f"✅ Completed successfully"
                 }
-                
                 st.success(f"✅ {step_title} completed")
-                
+                _append_log(f"Step '{step_title}' completed")
+
+                end_t = time.time()
+                end_iso = datetime.now().isoformat(timespec="seconds")
+                run_record["steps"].append({
+                    "step_index": idx,
+                    "step_name": step_name,
+                    "title": step_title,
+                    "state": "completed",
+                    "start_time": start_iso,
+                    "end_time": end_iso,
+                    "duration": round(end_t - start_t, 2)
+                })
             except Exception as e:
-                # Update status to failed
                 st.session_state.step_status[step_key] = {
                     "status": "failed",
                     "progress": 0,
                     "message": f"Error: {str(e)}"
                 }
                 st.error(f"❌ {step_title} failed: {str(e)}")
-                
-                # Stop execution on failure
+                _append_log(f"Step '{step_title}' failed: {str(e)}")
+
+                end_t = time.time()
+                end_iso = datetime.now().isoformat(timespec="seconds")
+                run_record["steps"].append({
+                    "step_index": idx,
+                    "step_name": step_name,
+                    "title": step_title,
+                    "state": "failed",
+                    "start_time": start_iso,
+                    "end_time": end_iso,
+                    "duration": round(end_t - start_t, 2)
+                })
+
                 st.session_state.stage_progress[stage_key] = {"status": "failed"}
                 st.session_state.pipeline_running = False
+                # Persist run record
+                st.session_state.execution_history.append(run_record)
+                save_execution_history(workspace, st.session_state.execution_history)
                 return False
-        
-        # Mark stage as completed
-        st.session_state.stage_progress[stage_key] = {"status": "completed"}
-        st.session_state.pipeline_running = False
-        st.success(f"🎉 Stage '{stage_title}' completed successfully!")
-        return True
-        
+
+        # Done or stopped
+        if st.session_state.stop_requested:
+            st.session_state.stage_progress[stage_key] = {"status": "pending"}
+            st.session_state.pipeline_running = False
+            _append_log(f"Stage '{stage_title}' stopped by user")
+            st.info(f"Stage '{stage_title}' stopped")
+        else:
+            st.session_state.stage_progress[stage_key] = {"status": "completed"}
+            st.session_state.pipeline_running = False
+            _append_log(f"Stage '{stage_title}' completed")
+            st.success(f"🎉 Stage '{stage_title}' completed successfully!")
+
+        # Persist run record
+        st.session_state.execution_history.append(run_record)
+        save_execution_history(workspace, st.session_state.execution_history)
+        return not st.session_state.stop_requested
+
     except Exception as e:
         st.error(f"Stage execution failed: {str(e)}")
         st.session_state.pipeline_running = False
         stage_key = f"stage_{stage_idx}"
         st.session_state.stage_progress[stage_key] = {"status": "failed"}
+        _append_log(f"Stage failed: {str(e)}")
+        # Try to persist whatever we have
+        if st.session_state.current_workspace:
+            save_execution_history(st.session_state.current_workspace, st.session_state.execution_history)
         return False
+
+def execute_stage(stage_idx: int, stage_data: dict):
+    """Execute a pipeline stage with selected steps"""
+    return _execute_steps(stage_idx, stage_data, step_indices=None)
+
+def execute_specific_steps(stage_idx: int, stage_data: dict, indices: List[int]):
+    """Execute only specific steps within a stage"""
+    return _execute_steps(stage_idx, stage_data, step_indices=indices)
 
 # Update render_workspace_section() to handle no workspace
 def render_workspace_section():
@@ -468,20 +649,20 @@ def render_workspace_section():
 def render_workspace_summary():
     """Render workspace summary section"""
     st.markdown('<div class="section-header">📊 Workspace Summary</div>', unsafe_allow_html=True)
-    
+
     current_ws = st.session_state.current_workspace
     if not current_ws:
         st.info("No workspace selected")
         return
-    
+
     ws_path = Path(current_ws)
-    
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         st.markdown("**Workspace Location:**")
         st.code(current_ws)
-        
+
         # Show metadata if exists
         metadata_file = ws_path / "workspace_metadata.json"
         if metadata_file.exists():
@@ -491,7 +672,20 @@ def render_workspace_summary():
                 st.json(metadata, expanded=False)
             except Exception:
                 pass
-    
+
+        # Execution history table
+        history = st.session_state.execution_history or load_execution_history(current_ws)
+        if history:
+            st.markdown("**Recent Executions:**")
+            # Show last 5
+            rows = []
+            for run in history[-5:]:
+                steps = run.get("steps", [])
+                completed = sum(1 for s in steps if s.get("state") == "completed")
+                failed = sum(1 for s in steps if s.get("state") == "failed")
+                rows.append(f"- {run.get('started_at')} • {run.get('stage_title')} • {completed} ok / {failed} failed")
+            st.markdown("\n".join(rows))
+
     with col2:
         st.markdown("**Output Files:**")
         output_dir = ws_path / "data" / "output"
@@ -499,6 +693,8 @@ def render_workspace_summary():
             for f in sorted(output_dir.glob("*")):
                 if f.is_file():
                     st.markdown(f"📄 {f.name}")
+        else:
+            st.caption("No outputs yet")
 
 
 def render_step_progress(step_title: str, step_name: str, step_data: dict, stage_idx: int, step_idx: int, status: str = "pending"):
@@ -531,25 +727,25 @@ def render_step_progress(step_title: str, step_name: str, step_data: dict, stage
     # Step container
     with st.container():
         # Header with checkbox
-        col1, col2 = st.columns([4, 1])
-        
+        col1, col2, col3 = st.columns([4, 1, 1])
+
         with col1:
             # Enable/disable checkbox
             step_enabled_key = f"enabled_{stage_idx}_{step_idx}"
             is_enabled = st.session_state.step_enabled.get(step_enabled_key, True)
-            
+
             new_enabled = st.checkbox(
                 f"{icon} **{step_title}**",
                 value=is_enabled,
                 key=step_enabled_key,
                 disabled=(status == "running")
             )
-            
+
             st.session_state.step_enabled[step_enabled_key] = new_enabled
-            
+
             if message:
                 st.caption(f"💬 {message}")
-        
+
         with col2:
             st.markdown(f"""
             <div style="
@@ -564,6 +760,13 @@ def render_step_progress(step_title: str, step_name: str, step_data: dict, stage
                 {status.upper()}
             </div>
             """, unsafe_allow_html=True)
+
+        with col3:
+            # Retry button for failed/skipped steps
+            if status in ("failed", "skipped") and not st.session_state.pipeline_running:
+                if st.button("↻ Retry", key=f"retry_{stage_idx}_{step_idx}", use_container_width=True):
+                    execute_specific_steps(stage_idx, {"title": f"Retry {step_title}", "steps": [step_data]}, [0])
+                    st.rerun()
         
         # Show progress bar if running
         if status == "running" and progress > 0:
@@ -796,7 +999,7 @@ def render_pipeline_config():
             steps = stage.get("steps", [])
             
             # Stage header
-            col1, col2, col3 = st.columns([2, 1, 1])
+            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
             with col1:
                 st.markdown(f"### {stage_title}")
             with col2:
@@ -805,25 +1008,27 @@ def render_pipeline_config():
                         st.session_state.step_enabled[f"enabled_{i}_{j}"] = True
                     st.rerun()
             with col3:
+                if st.button(f"❌ None", key=f"disable_all_{i}", use_container_width=True):
+                    for j in range(len(steps)):
+                        st.session_state.step_enabled[f"enabled_{i}_{j}"] = False
+                    st.rerun()
+            with col4:
                 stage_key = f"stage_{i}"
-                stage_info = st.session_state.stage_progress.get(stage_key, {"status": "pending"})
-                
+                stage_info_state = st.session_state.stage_progress.get(stage_key, {"status": "pending"})
+
                 # Disable run button if already running
-                is_running = stage_info.get("status") == "running" or st.session_state.pipeline_running
-                
+                is_running = stage_info_state.get("status") == "running" or st.session_state.pipeline_running
+
                 if not is_running:
                     if st.button(f"▶️ Run", key=f"run_stage_{i}", use_container_width=True, type="primary"):
-                        # Execute the stage
                         with st.spinner(f"Executing {stage_title}..."):
                             success = execute_stage(i, stage)
-                        
                         if success:
                             st.balloons()
                         st.rerun()
                 else:
-                    if st.button(f"⏸️ Stop", key=f"pause_stage_{i}", use_container_width=True):
-                        st.session_state.stage_progress[stage_key] = {"status": "pending"}
-                        st.session_state.pipeline_running = False
+                    if st.button(f"⏹ Stop", key=f"stop_stage_{i}", use_container_width=True):
+                        st.session_state.stop_requested = True
                         st.rerun()
             
             st.divider()
@@ -841,58 +1046,87 @@ def render_pipeline_config():
                     
                     render_step_progress(step_title_text, step_name, step, i, j, step_info.get("status", "pending"))
                 
-                # Progress summary
+                # Progress summary + retry failed
                 st.divider()
-                completed = sum(1 for step in steps 
+                total = len(steps)
+                completed = sum(1 for step in steps
                                if st.session_state.step_status.get(f"{step.get('name')}_{step.get('title')}", {}).get("status") == "completed")
                 enabled = sum(1 for j in range(len(steps)) if st.session_state.step_enabled.get(f"enabled_{i}_{j}", True))
-                
-                col1, col2 = st.columns([3, 1])
+                failed_indices = [idx for idx, step in enumerate(steps)
+                                  if st.session_state.step_status.get(f"{step.get('name')}_{step.get('title')}", {}).get("status") == "failed"]
+
+                col1, col2, col3 = st.columns([3, 1, 1])
                 with col1:
-                    st.progress(completed / len(steps) if steps else 0)
-                    st.caption(f"Progress: {completed}/{len(steps)} completed • {enabled} enabled")
+                    st.progress(completed / total if total else 0)
+                    st.caption(f"Progress: {completed}/{total} completed • {enabled} enabled")
                 with col2:
-                    if st.button(f"❌ None", key=f"disable_all_{i}", use_container_width=True):
-                        for j in range(len(steps)):
-                            st.session_state.step_enabled[f"enabled_{i}_{j}"] = False
-                        st.rerun()
+                    if failed_indices and not st.session_state.pipeline_running:
+                        if st.button("↻ Retry Failed", key=f"retry_failed_{i}", use_container_width=True):
+                            with st.spinner("Retrying failed steps..."):
+                                execute_specific_steps(i, stage, failed_indices)
+                            st.rerun()
+                with col3:
+                    # already used above for disable all; keep empty here to keep layout compact
+                    st.empty()
 
 def render_pipeline_monitor():
     """Render real-time pipeline monitoring section"""
     st.markdown('<div class="section-header">📊 Pipeline Monitor</div>', unsafe_allow_html=True)
-    
-    if not st.session_state.pipeline_running:
-        st.info("Pipeline is not currently running. Start a stage to see real-time monitoring.")
-        return
-    
-    # Real-time metrics
+
+    # Determine source for summary: running -> session, else last run
+    if st.session_state.pipeline_running:
+        running = True
+        steps_status = list(st.session_state.step_status.values())
+    else:
+        running = False
+        steps_status = []
+        # Use last execution of current workspace
+        if st.session_state.execution_history:
+            last_run = st.session_state.execution_history[-1]
+            for s in last_run.get("steps", []):
+                steps_status.append({"status": s.get("state", "pending")})
+
+    # Summary counts
+    running_steps = sum(1 for s in steps_status if s.get("status") == "running")
+    completed_steps = sum(1 for s in steps_status if s.get("status") == "completed")
+    failed_steps = sum(1 for s in steps_status if s.get("status") == "failed")
+    total_steps = len(steps_status) if steps_status else 0
+    percentage = (completed_steps / total_steps * 100) if total_steps else 0.0
+
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
         st.metric("Status", "🔄 Running" if st.session_state.pipeline_running else "⏸️ Idle")
-    
     with col2:
-        # Calculate active steps
-        active_steps = sum(1 for status in st.session_state.step_status.values() if status.get("status") == "running")
-        st.metric("Active Steps", active_steps)
-    
+        st.metric("Active Steps", running_steps)
     with col3:
-        # Calculate completed steps
-        completed_steps = sum(1 for status in st.session_state.step_status.values() if status.get("status") == "completed")
         st.metric("Completed", completed_steps)
-    
     with col4:
-        # Calculate failed steps
-        failed_steps = sum(1 for status in st.session_state.step_status.values() if status.get("status") == "failed")
         st.metric("Failed", failed_steps)
-    
+
+    # Charts
+    if _charts_available:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            # Timeline uses last run
+            if st.session_state.execution_history:
+                last_run = st.session_state.execution_history[-1]
+                render_pipeline_timeline(last_run.get("steps", []))
+        with c2:
+            render_progress_gauge(percentage, title="Completion")
+            render_step_distribution({
+                "completed_steps": completed_steps,
+                "failed_steps": failed_steps,
+                "running_steps": running_steps,
+            })
+    else:
+        st.caption("Charts unavailable. Plotly not installed or failed to import.")
+
     # Live log viewer
     with st.expander("📝 Live Logs", expanded=True):
         log_container = st.container()
         with log_container:
-            # Placeholder for live logs
             if hasattr(st.session_state, 'pipeline_logs') and st.session_state.pipeline_logs:
-                for log in st.session_state.pipeline_logs[-10:]:  # Show last 10 logs
+                for log in st.session_state.pipeline_logs[-20:]:  # Show last 20 logs
                     st.text(log)
             else:
                 st.caption("No logs available yet...")
