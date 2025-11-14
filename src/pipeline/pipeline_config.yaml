@@ -47,7 +47,6 @@ pipeline:
         - name: parse_html
           title: Convert Project HTML to JSON
           args:
-            batch_mode: true
             input_dir: ${workspace}/data/output/projects_html
             output_dir: ${workspace}/data/output/projects_json
             save_json: true
@@ -55,7 +54,6 @@ pipeline:
         - name: parse_html
           title: Convert Professional HTML to JSON
           args:
-            batch_mode: true
             input_dir: ${workspace}/data/output/professionals_html
             output_dir: ${workspace}/data/output/professionals_json
             save_json: true

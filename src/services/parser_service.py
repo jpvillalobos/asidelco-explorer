@@ -16,44 +16,36 @@ class ParserService:
         """Initialize parser service"""
         pass
     
-    def parse_html_to_json(
+    def parse_html_batch(
         self,
-        input_dir: Optional[str] = None,
-        output_dir: Optional[str] = None,
-        batch_mode: bool = True,
+        input_dir: str,
+        output_dir: str,
         save_json: bool = True,
         context: Optional[object] = None
     ) -> Dict[str, Any]:
         """
-        Parse HTML files to JSON format
+        Parse batch of HTML files to JSON format
         
         Args:
             input_dir: Directory containing HTML files
             output_dir: Directory to save JSON files
-            batch_mode: Process all files in directory
-            save_json: Save output as JSON files
+            save_json: Whether to save output as JSON files (default: True)
             context: Optional context for progress reporting
             
         Returns:
             Dictionary with parse results
         """
-        logger.info("Starting HTML to JSON parsing")
+        logger.info(f"Starting batch HTML parsing: {input_dir} -> {output_dir}")
+        logger.info(f"Settings - save_json: {save_json}")
         
-        # Resolve paths
-        if not input_dir:
-            input_dir = Path.cwd() / "data" / "output" / "html"
-        else:
-            input_dir = Path(input_dir)
+        input_path = Path(input_dir)
+        output_path = Path(output_dir)
         
-        if not output_dir:
-            output_dir = Path.cwd() / "data" / "output" / "json"
-        else:
-            output_dir = Path(output_dir)
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if save_json:
+            output_path.mkdir(parents=True, exist_ok=True)
         
         # Check input directory exists
-        if not input_dir.exists():
+        if not input_path.exists():
             logger.error(f"Input directory does not exist: {input_dir}")
             return {
                 "count": 0,
@@ -64,9 +56,13 @@ class ParserService:
         # Import parser here to avoid circular imports
         try:
             from etl.extract.html_parser import parse_project_html_file
+            logger.info("Using html_parser.parse_project_html_file")
         except ImportError:
+            logger.warning("Could not import html_parser, trying html_to_json")
             try:
-                from etl.extract.html_to_json import html_to_json as parse_project_html_file
+                from etl.extract.html_to_json import process_file
+                parse_project_html_file = lambda filepath: process_file(filepath)
+                logger.info("Using html_to_json.process_file")
             except ImportError:
                 logger.error("Could not import HTML parser module")
                 return {
@@ -76,7 +72,7 @@ class ParserService:
                 }
         
         # Get HTML files
-        html_files = list(input_dir.glob("*.html"))
+        html_files = list(input_path.glob("*.html"))
         total_files = len(html_files)
         
         if total_files == 0:
@@ -92,13 +88,14 @@ class ParserService:
         # Track results
         success_count = 0
         error_count = 0
+        parsed_data_list = []
         
         # Parse each file
         for index, html_file in enumerate(html_files, start=1):
             logger.info(f"[{index}/{total_files}] Parsing {html_file.name}")
             
             # Update progress
-            if context:
+            if context and hasattr(context, 'report_progress'):
                 context.report_progress(
                     index,
                     total_files,
@@ -110,13 +107,17 @@ class ParserService:
                 # Parse HTML file
                 parsed_data = parse_project_html_file(str(html_file))
                 
-                if save_json and parsed_data:
-                    # Save as JSON
-                    json_file = output_dir / f"{html_file.stem}.json"
-                    with open(json_file, 'w', encoding='utf-8') as f:
-                        json.dump(parsed_data, f, ensure_ascii=False, indent=2)
+                if parsed_data:
+                    parsed_data_list.append(parsed_data)
                     
-                    logger.info(f"[{index}/{total_files}] ✓ Saved {json_file.name}")
+                    if save_json:
+                        json_file = output_path / f"{html_file.stem}.json"
+                        with open(json_file, 'w', encoding='utf-8') as f:
+                            json.dump(parsed_data, f, ensure_ascii=False, indent=2)
+                        logger.info(f"[{index}/{total_files}] ✓ Saved {json_file.name}")
+                    else:
+                        logger.info(f"[{index}/{total_files}] ✓ Parsed {html_file.name}")
+                    
                     success_count += 1
                 else:
                     logger.warning(f"[{index}/{total_files}] No data extracted from {html_file.name}")
@@ -132,12 +133,48 @@ class ParserService:
         logger.info(f"  Total files: {total_files}")
         logger.info(f"  ✓ Successfully parsed: {success_count}")
         logger.info(f"  ✗ Errors: {error_count}")
-        logger.info(f"  Output directory: {output_dir}")
+        if save_json:
+            logger.info(f"  Output directory: {output_dir}")
         logger.info("="*80)
         
-        return {
+        result = {
             "count": success_count,
             "output_dir": str(output_dir),
             "total_files": total_files,
             "errors": error_count
         }
+        
+        if not save_json:
+            result["data"] = parsed_data_list
+        
+        return result
+    
+    def parse_html_to_json(
+        self,
+        input_dir: Optional[str] = None,
+        output_dir: Optional[str] = None,
+        batch_mode: bool = True,
+        save_json: bool = True,
+        context: Optional[object] = None
+    ) -> Dict[str, Any]:
+        """
+        Parse HTML files to JSON format (alternative interface)
+        
+        Args:
+            input_dir: Directory containing HTML files
+            output_dir: Directory to save JSON files
+            batch_mode: Process all files in directory
+            save_json: Save output as JSON files
+            context: Optional context for progress reporting
+            
+        Returns:
+            Dictionary with parse results
+        """
+        if not input_dir:
+            input_dir = str(Path.cwd() / "data" / "output" / "html")
+        
+        if not output_dir:
+            output_dir = str(Path.cwd() / "data" / "output" / "json")
+        
+        # Delegate to parse_html_batch
+        return self.parse_html_batch(input_dir, output_dir, save_json, context)
