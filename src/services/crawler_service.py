@@ -9,6 +9,8 @@ import time
 import pandas as pd
 from bs4 import BeautifulSoup
 from collections import defaultdict
+import re
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +264,7 @@ class CrawlerService:
         context: Optional[object] = None
     ) -> Dict[str, Any]:
         """
-        Crawl professional profiles from CFIA
+        Crawl professional profiles from CFIA by extracting carnets from project HTML files
 
         Args:
             base_url: Base URL for the CFIA service
@@ -278,27 +280,319 @@ class CrawlerService:
         Returns:
             Dictionary with crawl results
         """
-        logger.info(f"Starting professionals crawl: {directory_url}")
+        logger.info(f"Starting professionals crawl from: {directory_url}")
+        logger.info(f"Crawler settings - Rate limit: {rate_limit}s, Max retries: {max_retries}, Timeout: {timeout}s")
 
-        # Resolve paths
+        # Resolve paths - ONLY resolve filesystem paths, NOT URLs
+        if not input_dir:
+            input_dir = Path.cwd() / "data" / "output" / "projects" / "html"
+        else:
+            # Check if it's a URL (starts with http:// or https://)
+            if not input_dir.startswith(('http://', 'https://')):
+                input_dir = Path(input_dir)
+            else:
+                logger.error(f"input_dir should be a filesystem path, not a URL: {input_dir}")
+                return {"count": 0, "error": "Invalid input_dir"}
+
         if not output_dir:
             output_dir = Path.cwd() / "data" / "output" / "professionals"
         else:
-            output_dir = Path(output_dir)
+            # Same check for output_dir
+            if not output_dir.startswith(('http://', 'https://')):
+                output_dir = Path(output_dir)
+            else:
+                logger.error(f"output_dir should be a filesystem path, not a URL: {output_dir}")
+                return {"count": 0, "error": "Invalid output_dir"}
 
         output_html_dir = output_dir / "html"
         output_json_dir = output_dir / "json"
         output_html_dir.mkdir(parents=True, exist_ok=True)
         output_json_dir.mkdir(parents=True, exist_ok=True)
 
-        # TODO: Extract carnets from project HTML files
-        # This would require parsing the project HTML files and extracting professional IDs
-        # For now, return placeholder
+        # Validate URLs
+        if not directory_url.startswith(('http://', 'https://')):
+            logger.error(f"directory_url must be a valid HTTP(S) URL: {directory_url}")
+            return {"count": 0, "error": "Invalid directory_url"}
+        
+        if not base_url.startswith(('http://', 'https://')):
+            logger.error(f"base_url must be a valid HTTP(S) URL: {base_url}")
+            return {"count": 0, "error": "Invalid base_url"}
 
-        logger.info("Professional crawling not fully implemented yet")
+        # Check input directory exists
+        if not input_dir.exists():
+            logger.error(f"Input directory does not exist: {input_dir}")
+            return {
+                "count": 0,
+                "output_dir": str(output_dir),
+                "error": f"Input directory not found: {input_dir}"
+            }
+
+        # Build hash set of already crawled carnets from existing files
+        logger.info(f"Scanning output directory for existing files: {output_html_dir}")
+        crawled_carnets = set()
+        if output_html_dir.exists():
+            for file in output_html_dir.glob("*-detail.html"):
+                try:
+                    # Extract carnet from filename (e.g., "12345-detail.html" -> "12345")
+                    carnet = file.stem.replace("-detail", "")
+                    crawled_carnets.add(carnet)
+                except Exception as e:
+                    logger.warning(f"Could not parse filename {file.name}: {e}")
+        
+            logger.info(f"Found {len(crawled_carnets)} already-crawled professionals in output directory")
+    
+        # Extract carnets from project HTML files
+        logger.info(f"Extracting carnets from project HTML files in: {input_dir}")
+        carnets_to_process = set()
+        project_files = list(input_dir.glob("*.html"))
+    
+        logger.info(f"Found {len(project_files)} project HTML files to parse")
+    
+        for proj_file in project_files:
+            try:
+                with open(proj_file, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+            
+                soup = BeautifulSoup(html_content, 'html.parser')
+            
+                # NEW APPROACH: Find the table row with "Carnet Profesional"
+                # Look for <td> containing "Carnet Profesional" text
+                carnet_cell = None
+                for td in soup.find_all('td'):
+                    if 'Carnet Profesional' in td.get_text(strip=True):
+                        # Get the next <td> sibling which contains the value
+                        carnet_cell = td.find_next_sibling('td')
+                        break
+                
+                if carnet_cell:
+                    # Extract text from <p> tag inside the cell
+                    carnet_p = carnet_cell.find('p')
+                    if carnet_p:
+                        carnet_raw = carnet_p.get_text(strip=True)
+                        if carnet_raw:
+                            # Handle multiple carnets separated by comma
+                            carnet = carnet_raw.split(',')[0].strip()
+                            if carnet and carnet not in crawled_carnets:
+                                carnets_to_process.add(carnet)
+                                logger.debug(f"Extracted carnet {carnet} from {proj_file.name}")
+                    else:
+                        # Fallback: get text directly from td
+                        carnet_raw = carnet_cell.get_text(strip=True)
+                        if carnet_raw:
+                            carnet = carnet_raw.split(',')[0].strip()
+                            if carnet and carnet not in crawled_carnets:
+                                carnets_to_process.add(carnet)
+                                logger.debug(f"Extracted carnet {carnet} from {proj_file.name}")
+        
+            except Exception as e:
+                logger.warning(f"Could not parse project file {proj_file.name}: {e}")
+    
+        logger.info(f"Extracted {len(carnets_to_process)} unique carnets to process")
+        logger.info(f"Skipping {len(crawled_carnets)} already-crawled carnets")
+    
+        if not carnets_to_process:
+            logger.info("No new carnets to process")
+            return {
+                "count": 0,
+                "output_dir": str(output_dir),
+                "total_carnets": 0,
+                "skipped": len(crawled_carnets),
+                "message": "No new carnets found"
+            }
+    
+        # Limit to max_members if specified
+        carnets_list = sorted(list(carnets_to_process))[:max_members]
+        total_carnets = len(carnets_list)
+    
+        logger.info(f"Processing {total_carnets} carnets (limited to max_members={max_members})")
+        logger.info("="*80)
+    
+        # Initialize HTTP headers
+        self.headers["origin"] = base_url
+        self.headers["referer"] = directory_url
+    
+        # Track results
+        success_count = 0
+        error_count = 0
+    
+        # Process each carnet
+        for index, carnet in enumerate(carnets_list, start=1):
+            logger.info(f"[{index}/{total_carnets}] Processing carnet: {carnet}")
+        
+            # Update progress
+            if context:
+                context.report_progress(
+                    index,
+                    total_carnets,
+                    f"Processing carnet {carnet} ({index}/{total_carnets})",
+                    {"success": success_count, "errors": error_count}
+                )
+        
+            # Step 1: POST to members directory to get list
+            payload = {
+                "Consulta.CheckFiltro": "1",
+                "Consulta.Dato": carnet,
+                "Consulta.ColegioCiviles": "true",
+                "Consulta.ColegioArquitectos": "true",
+                "Consulta.ColegioCiemi": "true",
+                "Consulta.ColegioTopografos": "true",
+                "Consulta.ColegioTecnologos": "true",
+                "Consulta.Provincia": "0",
+                "Consulta.Canton": "0",
+                "Consulta.Distrito": "0",
+            }
+        
+            attempt = 0
+            list_success = False
+            html_list = None
+        
+            while attempt < max_retries and not list_success:
+                attempt += 1
+                try:
+                    response = self.session.post(
+                        directory_url,
+                        headers=self.headers,
+                        data=payload,
+                        timeout=timeout
+                    )
+                
+                    if response.status_code == 200:
+                        html_list = response.text
+                        # Save list HTML
+                        list_file = output_html_dir / f"{carnet}.html"
+                        with open(list_file, 'w', encoding='utf-8') as f:
+                            f.write(html_list)
+                        list_success = True
+                        logger.debug(f"[{index}/{total_carnets}] Saved members list for {carnet}")
+                    else:
+                        logger.warning(f"[{index}/{total_carnets}] HTTP {response.status_code} for carnet {carnet} (attempt {attempt}/{max_retries})")
+            
+                except Exception as e:
+                    logger.error(f"[{index}/{total_carnets}] Attempt {attempt}/{max_retries} failed for carnet {carnet}: {e}")
+                    if attempt < max_retries:
+                        backoff_time = 2 ** attempt
+                        logger.info(f"[{index}/{total_carnets}] Waiting {backoff_time}s before retry...")
+                        time.sleep(backoff_time)
+        
+            if not list_success or not html_list:
+                error_count += 1
+                logger.error(f"[{index}/{total_carnets}] ✗ Failed to get members list for carnet {carnet}")
+                time.sleep(rate_limit)
+                continue
+        
+            # Step 2: Extract detail URL from members list HTML
+            # Pattern to find the detail link with matching carnet
+            pat_exact = re.compile(
+                rf"""
+                    var\s*elemento\s*=\s*          # var elemento=
+                    \\?["']                        #   quote optionally escaped
+                    (?P<path>/ListadoMiembros/Miembros/DetalleMiembro\?cedula=\d+)
+                    ["']\s*;?                      #   closing quote and optional ;
+                    .*?                            #   anything (non-greedy)
+                    <td\s+class=\\?['"]tablaMiembros\\?['"]>
+                    \s*{re.escape(carnet)}\s*
+                    </td>
+                """,
+                flags=re.IGNORECASE | re.DOTALL | re.VERBOSE
+            )
+        
+            match = pat_exact.search(html_list)
+        
+            if not match:
+                # Fallback: first elemento variable
+                match = re.search(
+                    r"var\s*elemento\s*=\s*\\?['\"](?P<path>/ListadoMiembros/Miembros/DetalleMiembro\?cedula=\d+)['\"]",
+                    html_list,
+                    flags=re.IGNORECASE
+                )
+                if match:
+                    logger.debug(f"[{index}/{total_carnets}] Using fallback detail link for {carnet}")
+        
+            if not match:
+                error_count += 1
+                logger.error(f"[{index}/{total_carnets}] ✗ Could not find detail link for carnet {carnet}")
+                time.sleep(rate_limit)
+                continue
+        
+            detail_path = match.group("path").replace("\\/", "/")
+            detail_url = base_url + detail_path
+        
+            # Step 3: GET detail page
+            attempt = 0
+            detail_success = False
+        
+            while attempt < max_retries and not detail_success:
+                attempt += 1
+                try:
+                    response = self.session.get(
+                        detail_url,
+                        headers=self.headers,
+                        timeout=timeout
+                    )
+                
+                    if response.status_code == 200:
+                        html_detail = response.text
+                    
+                        # Save detail HTML
+                        detail_html_file = output_html_dir / f"{carnet}-detail.html"
+                        with open(detail_html_file, 'w', encoding='utf-8') as f:
+                            f.write(html_detail)
+                    
+                        # Parse and save JSON
+                        soup = BeautifulSoup(html_detail, 'html.parser')
+                        section = soup.select_one("section.container.documentsPage.seccionBuscador")
+                        
+                        if section:
+                            inputs = section.find_all(['input', 'textarea'])
+                            detail_json = {
+                                t.get('name'): t.get('value', t.text.strip())
+                                for t in inputs if t.get('name')
+                            }
+                            detail_json['carnet'] = carnet
+                        
+                            # Save JSON
+                            detail_json_file = output_json_dir / f"{carnet}-detail.json"
+                            with open(detail_json_file, 'w', encoding='utf-8') as f:
+                                json.dump(detail_json, f, ensure_ascii=False, indent=2)
+                        
+                            logger.info(f"[{index}/{total_carnets}] ✓ Successfully crawled professional {carnet}")
+                            success_count += 1
+                            detail_success = True
+                        else:
+                            logger.warning(f"[{index}/{total_carnets}] No detail section found for {carnet}")
+                            success_count += 1  # Still count as success - HTML saved
+                            detail_success = True
+                    else:
+                        logger.warning(f"[{index}/{total_carnets}] HTTP {response.status_code} for detail {carnet} (attempt {attempt}/{max_retries})")
+            
+                except Exception as e:
+                    logger.error(f"[{index}/{total_carnets}] Attempt {attempt}/{max_retries} failed for detail {carnet}: {e}")
+                    if attempt < max_retries:
+                        backoff_time = 2 ** attempt
+                        logger.info(f"[{index}/{total_carnets}] Waiting {backoff_time}s before retry...")
+                        time.sleep(backoff_time)
+        
+            if not detail_success:
+                error_count += 1
+                logger.error(f"[{index}/{total_carnets}] ✗ Failed to get detail for carnet {carnet}")
+        
+            # Rate limiting
+            time.sleep(rate_limit)
+    
+        # Final summary
+        logger.info("="*80)
+        logger.info(f"Professionals crawl completed")
+        logger.info(f"  Total carnets processed: {total_carnets}")
+        logger.info(f"  ✓ Successfully crawled: {success_count}")
+        logger.info(f"  ↷ Skipped (already crawled): {len(crawled_carnets)}")
+        logger.info(f"  ✗ Errors: {error_count}")
+        logger.info(f"  Output directory: {output_dir}")
+        logger.info("="*80)
 
         return {
-            "count": 0,
+            "count": success_count,
             "output_dir": str(output_dir),
-            "message": "Professional crawling requires project HTML parsing implementation"
+            "total_carnets": total_carnets,
+            "errors": error_count,
+            "skipped": len(crawled_carnets)
         }

@@ -13,16 +13,7 @@ from enum import Enum
 
 import streamlit as st
 
-# Try to use charts if Plotly is available
-try:
-    from ui.components.charts import (
-        render_progress_gauge,
-        render_step_distribution,
-        render_pipeline_timeline,
-    )
-    _charts_available = True
-except Exception:
-    _charts_available = False
+# Charts removed - using simple progress bars only
 
 # Must be the first Streamlit command
 if "_page_configured" not in st.session_state:
@@ -1335,7 +1326,7 @@ def render_pipeline_config():
                     st.empty()
 
 def render_pipeline_monitor():
-    """Render real-time pipeline monitoring section"""
+    """Render real-time pipeline monitoring section with simple progress bars"""
     st.markdown('<div class="section-header">📊 Pipeline Monitor</div>', unsafe_allow_html=True)
 
     # Determine source for summary: running -> session, else last run
@@ -1355,36 +1346,33 @@ def render_pipeline_monitor():
     running_steps = sum(1 for s in steps_status if s.get("status") == "running")
     completed_steps = sum(1 for s in steps_status if s.get("status") == "completed")
     failed_steps = sum(1 for s in steps_status if s.get("status") == "failed")
+    skipped_steps = sum(1 for s in steps_status if s.get("status") == "skipped")
     total_steps = len(steps_status) if steps_status else 0
-    percentage = (completed_steps / total_steps * 100) if total_steps else 0.0
+    percentage = (completed_steps / total_steps) if total_steps else 0.0
 
-    col1, col2, col3, col4 = st.columns(4)
+    # Status summary
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Status", "🔄 Running" if st.session_state.pipeline_running else "⏸️ Idle")
     with col2:
-        st.metric("Active Steps", running_steps)
+        st.metric("Running", running_steps)
     with col3:
         st.metric("Completed", completed_steps)
     with col4:
         st.metric("Failed", failed_steps)
+    with col5:
+        st.metric("Skipped", skipped_steps)
 
-    # Charts
-    if _charts_available:
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            # Timeline uses last run
-            if st.session_state.execution_history:
-                last_run = st.session_state.execution_history[-1]
-                render_pipeline_timeline(last_run.get("steps", []))
-        with c2:
-            render_progress_gauge(percentage, title="Completion")
-            render_step_distribution({
-                "completed_steps": completed_steps,
-                "failed_steps": failed_steps,
-                "running_steps": running_steps,
-            })
+    st.divider()
+
+    # Overall progress bar
+    st.markdown("**Overall Progress:**")
+    if total_steps > 0:
+        st.progress(percentage, text=f"{completed_steps}/{total_steps} steps completed ({percentage*100:.1f}%)")
     else:
-        st.caption("Charts unavailable. Plotly not installed or failed to import.")
+        st.progress(0, text="No steps executed yet")
+
+    st.divider()
 
     # Live log viewer
     with st.expander("📝 Live Logs", expanded=True):
