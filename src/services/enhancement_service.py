@@ -58,24 +58,24 @@ class EnhancementService:
     def _geocode_address(self, address: str, max_retries: int = 3) -> Optional[Dict[str, float]]:
         """
         Geocode an address to lat/lon coordinates.
-        
+
         Args:
             address: Address string to geocode
             max_retries: Maximum retry attempts
-            
+
         Returns:
             Dict with 'latitude' and 'longitude' or None if failed
         """
         # Check cache first
         if address in self.geocode_cache:
             return self.geocode_cache[address]
-        
+
         # Try geocoding with retries
         for attempt in range(max_retries):
             try:
                 logger.debug(f"Geocoding: {address} (attempt {attempt + 1}/{max_retries})")
                 location = self.geocoder.geocode(address, timeout=10)
-                
+
                 if location:
                     result = {
                         'latitude': location.latitude,
@@ -88,7 +88,7 @@ class EnhancementService:
                     logger.debug(f"No geocode result for: {address}")
                     self.geocode_cache[address] = None
                     return None
-                    
+
             except GeocoderTimedOut:
                 logger.warning(f"Geocoding timeout for: {address} (attempt {attempt + 1})")
                 if attempt < max_retries - 1:
@@ -97,17 +97,108 @@ class EnhancementService:
                 else:
                     self.geocode_cache[address] = None
                     return None
-                    
+
             except GeocoderServiceError as e:
                 logger.error(f"Geocoding service error for {address}: {e}")
                 self.geocode_cache[address] = None
                 return None
-                
+
             except Exception as e:
                 logger.error(f"Unexpected geocoding error for {address}: {e}")
                 self.geocode_cache[address] = None
                 return None
-        
+
+        return None
+
+    def _geocode_with_fallback(
+        self,
+        street: Optional[str],
+        district: Optional[str],
+        canton: Optional[str],
+        province: Optional[str],
+        country: str,
+        max_retries: int = 3
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Geocode an address with multi-level fallback strategy.
+
+        Tries progressively broader geographic areas:
+        1. Full address (street + district + canton + province + country)
+        2. District + canton + province + country
+        3. Canton + province + country
+        4. Province + country
+
+        Args:
+            street: Street address (may contain Costa Rican meter-based directions)
+            district: District name
+            canton: Canton name
+            province: Province name
+            country: Country name
+            max_retries: Maximum retry attempts per level
+
+        Returns:
+            Dict with 'latitude', 'longitude', and 'geocoding_level' or None if all levels failed
+        """
+        # Build address combinations for each fallback level
+        fallback_levels = []
+
+        # Level 1: Full address with street
+        if street and district and canton and province:
+            level1_parts = [street, district, canton, province, country]
+            fallback_levels.append({
+                'level': 1,
+                'address': ', '.join(level1_parts),
+                'description': 'Full address'
+            })
+
+        # Level 2: District + canton + province + country (skip problematic street)
+        if district and canton and province:
+            level2_parts = [district, canton, province, country]
+            fallback_levels.append({
+                'level': 2,
+                'address': ', '.join(level2_parts),
+                'description': 'District level'
+            })
+
+        # Level 3: Canton + province + country
+        if canton and province:
+            level3_parts = [canton, province, country]
+            fallback_levels.append({
+                'level': 3,
+                'address': ', '.join(level3_parts),
+                'description': 'Canton level'
+            })
+
+        # Level 4: Province + country
+        if province:
+            level4_parts = [province, country]
+            fallback_levels.append({
+                'level': 4,
+                'address': ', '.join(level4_parts),
+                'description': 'Province level'
+            })
+
+        # Try each level until one succeeds
+        for fallback in fallback_levels:
+            address = fallback['address']
+            level = fallback['level']
+            description = fallback['description']
+
+            logger.debug(f"Trying geocoding level {level} ({description}): {address}")
+
+            result = self._geocode_address(address, max_retries=max_retries)
+
+            if result:
+                result['geocoding_level'] = level
+                result['geocoding_description'] = description
+                result['geocoded_address'] = address
+                logger.debug(f"Geocoding succeeded at level {level} ({description})")
+                return result
+            else:
+                logger.debug(f"Geocoding failed at level {level} ({description})")
+
+        # All levels failed
+        logger.debug(f"All geocoding levels failed for: street={street}, district={district}, canton={canton}, province={province}")
         return None
     
     def add_geocoding(
@@ -169,70 +260,74 @@ class EnhancementService:
             'geocoded': 0,
             'cached': 0,
             'failed': 0,
-            'skipped': 0
+            'skipped': 0,
+            'level_1': 0,  # Full address
+            'level_2': 0,  # District level
+            'level_3': 0,  # Canton level
+            'level_4': 0   # Province level
         }
         
         enhanced_records = []
         
         for i, record in enumerate(records):
             try:
-                # Build address string from available fields
-                address_parts = []
-                
-                # Add street address
-                if address_field in record and record[address_field]:
-                    address_parts.append(str(record[address_field]))
-                
-                # Add district
-                if district_field in record and record[district_field]:
-                    address_parts.append(str(record[district_field]))
-                
-                # Add canton
-                if canton_field in record and record[canton_field]:
-                    address_parts.append(str(record[canton_field]))
-                
-                # Add province
-                if province_field in record and record[province_field]:
-                    address_parts.append(str(record[province_field]))
-                
-                # Add country
-                if country:
-                    address_parts.append(country)
-                
-                if not address_parts:
-                    logger.debug(f"Record {i}: No address fields available")
+                # Extract address components
+                street = str(record[address_field]) if address_field in record and record[address_field] else None
+                district = str(record[district_field]) if district_field in record and record[district_field] else None
+                canton = str(record[canton_field]) if canton_field in record and record[canton_field] else None
+                province = str(record[province_field]) if province_field in record and record[province_field] else None
+
+                # Check if we have at least province (minimum required)
+                if not province:
+                    logger.debug(f"Record {i}: No province field available, skipping geocoding")
                     record['geocoding_status'] = 'no_address'
                     stats['skipped'] += 1
                     enhanced_records.append(record)
                     continue
-                
-                full_address = ", ".join(address_parts)
-                
+
+                # Build a cache key from all components
+                cache_key_parts = [p for p in [street, district, canton, province, country] if p]
+                cache_key = ", ".join(cache_key_parts)
+
                 # Check if already in cache
-                was_cached = full_address in self.geocode_cache
-                
-                # Geocode
-                geocode_result = self._geocode_address(full_address)
-                
+                was_cached = cache_key in self.geocode_cache
+
+                # Use fallback geocoding strategy
+                geocode_result = self._geocode_with_fallback(
+                    street=street,
+                    district=district,
+                    canton=canton,
+                    province=province,
+                    country=country,
+                    max_retries=3
+                )
+
                 if geocode_result:
                     record['latitude'] = geocode_result['latitude']
                     record['longitude'] = geocode_result['longitude']
-                    record['geocoded_address'] = full_address
+                    record['geocoded_address'] = geocode_result.get('geocoded_address', cache_key)
+                    record['geocoding_level'] = geocode_result.get('geocoding_level', 0)
+                    record['geocoding_description'] = geocode_result.get('geocoding_description', 'Unknown')
                     record['geocoding_status'] = 'success'
-                    
+
+                    # Track level statistics
+                    level = geocode_result.get('geocoding_level', 0)
+                    if level in [1, 2, 3, 4]:
+                        stats[f'level_{level}'] += 1
+
                     if was_cached:
                         stats['cached'] += 1
                     else:
                         stats['geocoded'] += 1
                         # Rate limiting only for new geocoding requests
                         time.sleep(rate_limit)
-                    
-                    logger.debug(f"Record {i}: Geocoded to ({geocode_result['latitude']}, {geocode_result['longitude']})")
+
+                    logger.debug(f"Record {i}: Geocoded to ({geocode_result['latitude']}, {geocode_result['longitude']}) at level {level}")
                 else:
                     record['geocoding_status'] = 'failed'
                     stats['failed'] += 1
-                    logger.debug(f"Record {i}: Geocoding failed for {full_address}")
-                
+                    logger.debug(f"Record {i}: Geocoding failed for all levels")
+
                 enhanced_records.append(record)
                 
                 # Report progress
@@ -266,6 +361,11 @@ class EnhancementService:
         logger.info(f"  From cache: {stats['cached']}")
         logger.info(f"  Failed: {stats['failed']}")
         logger.info(f"  Skipped: {stats['skipped']}")
+        logger.info(f"  Geocoding levels breakdown:")
+        logger.info(f"    Level 1 (Full address): {stats['level_1']}")
+        logger.info(f"    Level 2 (District): {stats['level_2']}")
+        logger.info(f"    Level 3 (Canton): {stats['level_3']}")
+        logger.info(f"    Level 4 (Province): {stats['level_4']}")
         
         if context:
             context.report_progress(
