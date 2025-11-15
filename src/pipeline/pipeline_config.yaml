@@ -8,15 +8,17 @@ pipeline:
   stages:
     - id: ingest
       title: Ingest
+      description: Load and normalize input CSV/Excel file
       steps:
         - name: normalize_csv
-          title: Select Excel Input File
+          title: Normalize Input File
           args:
             input_file: data/input/Ene-Mar25.xlsx
-            output_file: normalized.csv
+            output_file: data/output/normalized.csv
 
     - id: crawl
       title: Crawl
+      description: Crawl CFIA website for project and professional data
       steps:
         - name: crawl_projects
           title: Crawl Projects
@@ -43,57 +45,64 @@ pipeline:
 
     - id: transform
       title: Transform
+      description: Parse HTML to JSON and merge data sources
       steps:
         - name: parse_html
-          title: Convert Project HTML to JSON
+          title: Parse Project HTML to JSON
           args:
-            input_dir: ${workspace}/data/output/projects_html
-            output_dir: ${workspace}/data/output/projects_json
+            input_dir: data/output/projects/html
+            output_dir: data/output/projects/json
             save_json: true
 
         - name: parse_html
-          title: Convert Professional HTML to JSON
+          title: Parse Professional HTML to JSON
           args:
-            input_dir: ${workspace}/data/output/professionals_html
-            output_dir: ${workspace}/data/output/professionals_json
+            input_dir: data/output/professionals/html
+            output_dir: data/output/professionals/json
             save_json: true
 
-        - name: transform_data
-          title: Merge CSV + Project JSON + Professional JSON
+        - name: merge_data
+          title: Merge CSV + Projects + Professionals
           args:
-            input_file: ${workspace}/data/output/Ene-Mar25_normalized.csv
-            output_file: ${workspace}/data/output/merged.json
-            transformations:
-              - merge:
-                  projects_json_dir: ${workspace}/data/output/projects_json
-                  professionals_json_dir: ${workspace}/data/output/professionals_json
+            csv_file: data/output/normalized.csv
+            projects_json_dir: data/output/projects/json
+            professionals_json_dir: data/output/professionals/json
+            output_file: data/output/merged.json
 
     - id: enhance
       title: Enhance
+      description: Validate, enrich, and add embeddings
       steps:
-        - name: generate_embeddings
-          title: Add Embeddings
+        - name: validate_enrich
+          title: Validate and Enrich Data
           args:
-            input_file: ${workspace}/data/output/merged.json
-            text_column: content
-            model: sbert
-            output_file: ${workspace}/data/output/merged_emb.json
+            input_file: data/output/merged.json
+            output_file: data/output/enriched.json
+            validation_rules: null
 
-        - name: transform_data
-          title: Add Geocodes (Lat/Lon)
+        - name: generate_embeddings
+          title: Generate Text Embeddings
           args:
-            input_file: ${workspace}/data/output/merged_emb.json
-            output_file: ${workspace}/data/output/merged_enriched.json
-            transformations:
-              - add_geocoding: true
+            input_file: data/output/enriched.json
+            text_field: project_data.Descripción del proyecto
+            model: openai
+            output_file: data/output/enriched_with_embeddings.json
 
     - id: load
       title: Load
+      description: Load data to OpenSearch and Neo4j
       steps:
         - name: load_opensearch
           title: Load to OpenSearch
           args:
-            input_file: ${workspace}/data/output/merged_enriched.json
+            input_file: data/output/enriched_with_embeddings.json
             host: localhost
             port: 9200
             index_name: asidelco-explorer
+
+        - name: load_neo4j
+          title: Load to Neo4j
+          args:
+            input_file: data/output/enriched_with_embeddings.json
+            uri: bolt://localhost:7687
+            auth: null

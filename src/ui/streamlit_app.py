@@ -420,9 +420,12 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             "crawl_projects": "crawl_projects",
             "crawl_professionals": "crawl_professionals",
             "parse_html": "parse_html",
+            "merge_data": "merge_data",
             "transform_data": "transform_data",
+            "validate_enrich": "validate_enrich",
             "generate_embeddings": "generate_embeddings",
             "load_opensearch": "load_opensearch",
+            "load_neo4j": "load_neo4j",
         }
 
         # Create status placeholders for real-time updates
@@ -887,7 +890,7 @@ def render_excel_upload_step(step_data: dict, stage_idx: int, step_idx: int):
         if step_args_key in st.session_state.step_args:
             st.session_state.step_args[step_args_key]["output_file"] = output_file
 
-def _get_workspace_files_and_dirs(workspace_path: Path, pattern: str = "*"):
+def _get_workspace_files_and_dirs(workspace_path: Path, pattern: str = "*", file_types: list = None):
     """Get files and directories from workspace matching pattern"""
     if not workspace_path.exists():
         return [], []
@@ -906,6 +909,10 @@ def _get_workspace_files_and_dirs(workspace_path: Path, pattern: str = "*"):
             # Get files
             for item in search_dir.rglob(pattern):
                 if item.is_file():
+                    # Filter by file types if specified
+                    if file_types:
+                        if not any(str(item).endswith(ext) for ext in file_types):
+                            continue
                     # Get relative path from workspace
                     try:
                         rel_path = item.relative_to(workspace_path)
@@ -930,15 +937,18 @@ def _is_path_argument(arg_name: str, arg_value: str) -> tuple[bool, str]:
     arg_lower = arg_name.lower()
 
     # Check for input file
-    if 'input_file' in arg_lower or arg_lower == 'input_file':
+    if 'input_file' in arg_lower or arg_lower == 'input_file' or 'csv_file' in arg_lower:
         return True, 'input_file'
 
     # Check for output file
     if 'output_file' in arg_lower or arg_lower == 'output_file':
         return True, 'output_file'
 
-    # Check for input directory
-    if 'input_dir' in arg_lower or arg_lower == 'input_dir' or arg_lower == 'input_directory':
+    # Check for input directory - ADD json_dir patterns
+    if ('input_dir' in arg_lower or arg_lower == 'input_dir' or
+        arg_lower == 'input_directory' or
+        'json_dir' in arg_lower or
+        arg_lower.endswith('_dir')):
         return True, 'input_dir'
 
     # Check for output directory
@@ -954,7 +964,7 @@ def _is_path_argument(arg_name: str, arg_value: str) -> tuple[bool, str]:
                     return True, 'output_file'
                 else:
                     return True, 'output_dir'
-            elif 'input' in arg_lower:
+            elif 'input' in arg_lower or 'csv' in arg_lower or 'json' in arg_lower:
                 if any(ext in arg_value for ext in ['.csv', '.json', '.xlsx', '.txt', '.html']):
                     return True, 'input_file'
                 else:
@@ -1077,30 +1087,38 @@ def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
 
                     if selection_mode == "Browse workspace":
                         if path_type == 'input_file':
-                            # Show file browser for input files
-                            files, _ = _get_workspace_files_and_dirs(workspace_path, "*")
-                            if files:
-                                # Filter to common input file types
-                                input_files = [f for f in files if any(f.endswith(ext) for ext in ['.csv', '.xlsx', '.json', '.html', '.txt'])]
-                                if input_files:
-                                    selected = st.selectbox(
-                                        f"Select {arg_name}:",
-                                        options=[""] + input_files,
-                                        index=input_files.index(str(arg_value)) + 1 if str(arg_value) in input_files else 0,
-                                        key=f"{arg_input_key}_select",
-                                        label_visibility="collapsed"
-                                    )
-                                    edited_args[arg_name] = selected if selected else str(arg_value)
-                                else:
-                                    st.warning("⚠️ No input files found in workspace")
-                                    edited_args[arg_name] = st.text_input(
-                                        "Path:",
-                                        value=str(arg_value),
-                                        key=f"{arg_input_key}_fallback",
-                                        label_visibility="collapsed"
-                                    )
+                            # Determine file type filter based on arg_name
+                            if 'csv' in arg_name.lower():
+                                file_types = ['.csv']
+                            elif 'json' in arg_name.lower():
+                                file_types = ['.json']
+                            elif 'excel' in arg_name.lower() or 'xlsx' in arg_name.lower():
+                                file_types = ['.xlsx', '.xls']
                             else:
-                                st.warning("⚠️ No files found in workspace")
+                                file_types = ['.csv', '.xlsx', '.json', '.html', '.txt']
+
+                            files, _ = _get_workspace_files_and_dirs(workspace_path, "*", file_types)
+
+                            if files:
+                                # Show helpful message
+                                st.caption(f"💡 Select existing {arg_name} from workspace")
+                                selected = st.selectbox(
+                                    f"Available files:",
+                                    options=[""] + files,
+                                    index=files.index(str(arg_value)) + 1 if str(arg_value) in files else 0,
+                                    key=f"{arg_input_key}_select",
+                                    label_visibility="collapsed"
+                                )
+                                edited_args[arg_name] = selected if selected else str(arg_value)
+
+                                # Show file info if selected
+                                if selected:
+                                    file_path = workspace_path / selected
+                                    if file_path.exists():
+                                        file_size = file_path.stat().st_size / (1024*1024)
+                                        st.caption(f"📊 Size: {file_size:.2f} MB")
+                            else:
+                                st.warning(f"⚠️ No {', '.join(file_types)} files found in workspace")
                                 edited_args[arg_name] = st.text_input(
                                     "Path:",
                                     value=str(arg_value),
@@ -1111,18 +1129,39 @@ def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
                         elif path_type == 'input_dir':
                             # Show directory browser for input directories
                             _, dirs = _get_workspace_files_and_dirs(workspace_path)
+
                             if dirs:
-                                # Add common output directories
-                                all_dirs = dirs + ["data/output/projects/html", "data/output/professionals/html"]
-                                all_dirs = sorted(list(set(all_dirs)))
+                                # Add common directories based on arg_name
+                                common_dirs = []
+                                if 'project' in arg_name.lower():
+                                    common_dirs.extend([
+                                        "data/output/projects/html",
+                                        "data/output/projects/json"
+                                    ])
+                                if 'professional' in arg_name.lower():
+                                    common_dirs.extend([
+                                        "data/output/professionals/html",
+                                        "data/output/professionals/json"
+                                    ])
+
+                                all_dirs = sorted(list(set(dirs + common_dirs)))
+
+                                st.caption(f"💡 Select existing {arg_name} from workspace")
                                 selected = st.selectbox(
-                                    f"Select {arg_name}:",
+                                    f"Available directories:",
                                     options=[""] + all_dirs,
                                     index=all_dirs.index(str(arg_value)) + 1 if str(arg_value) in all_dirs else 0,
                                     key=f"{arg_input_key}_select",
                                     label_visibility="collapsed"
                                 )
                                 edited_args[arg_name] = selected if selected else str(arg_value)
+
+                                # Show directory info if selected
+                                if selected:
+                                    dir_path = workspace_path / selected
+                                    if dir_path.exists():
+                                        file_count = len(list(dir_path.glob("*")))
+                                        st.caption(f"📁 Contains {file_count} items")
                             else:
                                 st.info("ℹ️ Directory will be created if it doesn't exist")
                                 edited_args[arg_name] = st.text_input(
@@ -1133,13 +1172,14 @@ def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
                                 )
 
                         elif path_type in ['output_file', 'output_dir']:
-                            # For output paths, just show text input with helper text
+                            # For output paths, show text input with helper text
                             st.caption("💡 Output path (will be created if needed)")
                             edited_args[arg_name] = st.text_input(
                                 "Path:",
                                 value=str(arg_value),
                                 key=f"{arg_input_key}_output",
-                                label_visibility="collapsed"
+                                label_visibility="collapsed",
+                                help="This file/directory will be created automatically"
                             )
 
                         else:
@@ -1171,7 +1211,10 @@ def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
                             label_visibility="collapsed"
                         )
                 else:
-                    # Regular text input for non-path arguments
+                    # Regular text input for non-path arguments or no workspace
+                    if workspace_path and not workspace_path.exists():
+                        st.caption("⚠️ Workspace not yet created - manual entry only")
+
                     edited_args[arg_name] = st.text_input(
                         arg_name,
                         value=str(arg_value),

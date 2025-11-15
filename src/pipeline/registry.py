@@ -1,14 +1,15 @@
 """Pipeline step registry with all available steps."""
 from typing import Callable, Dict, Any
 from pathlib import Path
-import json
-import logging
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class StepRegistry:
-    """Registry of all available pipeline steps."""
-
+    """Registry for pipeline steps."""
+    
     def __init__(self):
         self._steps: Dict[str, Callable] = {}
         self._services = {}  # Cache for lazy-loaded services
@@ -57,6 +58,12 @@ class StepRegistry:
             elif service_name == 'transform':
                 from services.transform_service import TransformService
                 self._services['transform'] = TransformService()
+            elif service_name == 'merge':
+                from services.merge_service import MergeService
+                self._services['merge'] = MergeService()
+            elif service_name == 'validation':
+                from services.validation_enrichment_service import ValidationEnrichmentService
+                self._services['validation'] = ValidationEnrichmentService()
             elif service_name == 'embedding':
                 from services.embedding_service import EmbeddingService
                 self._services['embedding'] = EmbeddingService()
@@ -68,8 +75,21 @@ class StepRegistry:
                 self._services['neo4j'] = Neo4jService()
         return self._services[service_name]
     
+    def register(self, name: str, func: Callable) -> None:
+        """Register a step function."""
+        self._steps[name] = func
+        logger.debug(f"Registered step: {name}")
+    
+    def get(self, name: str) -> Callable:
+        """Get a registered step function."""
+        if name not in self._steps:
+            raise ValueError(f"Unknown step type: {name}")
+        return self._steps[name]
+    
     def _register_default_steps(self):
         """Register all default pipeline steps."""
+        logger.info("Registering default pipeline steps")
+        
         # Ingest Stage
         self.register('normalize_csv', self._normalize_csv)
         
@@ -79,7 +99,9 @@ class StepRegistry:
         
         # Transform Stage
         self.register('parse_html', self._parse_html)
+        self.register('merge_data', self._merge_data)  # ← MAKE SURE THIS LINE EXISTS
         self.register('transform_data', self._transform_data)
+        self.register('validate_enrich', self._validate_enrich)
         
         # Enhance Stage
         self.register('generate_embeddings', self._generate_embeddings)
@@ -87,21 +109,9 @@ class StepRegistry:
         # Load Stage
         self.register('load_opensearch', self._load_opensearch)
         self.register('load_neo4j', self._load_neo4j)
-    
-    def register(self, name: str, func: Callable):
-        """Register a new step function."""
-        self._steps[name] = func
-    
-    def get(self, name: str) -> Callable:
-        """Get a registered step function."""
-        if name not in self._steps:
-            raise ValueError(f"Step '{name}' not found in registry")
-        return self._steps[name]
-    
-    def list_steps(self) -> list:
-        """List all registered step names."""
-        return list(self._steps.keys())
-    
+        
+        logger.info(f"Registered {len(self._steps)} steps")
+
     # Step implementations - services loaded on demand
     
     def _normalize_csv(self, **kwargs) -> Dict[str, Any]:
@@ -426,10 +436,100 @@ class StepRegistry:
             if file_handler:
                 logger.removeHandler(file_handler)
                 file_handler.close()
+    
+    def _merge_data(self, **kwargs) -> Dict[str, Any]:
+        """Merge CSV, Project JSON, and Professional JSON data"""
+        file_handler = self._setup_step_logging('merge', 'merge_data')
+        logger = logging.getLogger('services.merge_service')
+        
+        if file_handler:
+            logger.addHandler(file_handler)
+        
+        try:
+            merge_service = self._get_service('merge')
+            
+            csv_file = kwargs['csv_file']
+            projects_json_dir = kwargs['projects_json_dir']
+            professionals_json_dir = kwargs['professionals_json_dir']
+            output_file = kwargs['output_file']
+            
+            logger.info(f"Starting data merge")
+            logger.info(f"  CSV: {csv_file}")
+            logger.info(f"  Projects: {projects_json_dir}")
+            logger.info(f"  Professionals: {professionals_json_dir}")
+            logger.info(f"  Output: {output_file}")
+            
+            result = merge_service.merge_data_sources(
+                csv_file=csv_file,
+                projects_json_dir=projects_json_dir,
+                professionals_json_dir=professionals_json_dir,
+                output_file=output_file,
+                context=None  # Could pass progress context here
+            )
+            
+            logger.info(f"Merge completed: {result.get('count', 0)} records")
+            
+            return {
+                'status': 'success',
+                'output_file': output_file,
+                'records_merged': result.get('count', 0),
+                'stats': result.get('stats', {})
+            }
+        
+        finally:
+            if file_handler:
+                logger.removeHandler(file_handler)
+                file_handler.close()
 
 
+    def _validate_enrich(self, **kwargs) -> Dict[str, Any]:
+        """Validate and enrich merged data"""
+        file_handler = self._setup_step_logging('validation', 'validate_enrich')
+        logger = logging.getLogger('services.validation_enrichment_service')
+        
+        if file_handler:
+            logger.addHandler(file_handler)
+        
+        try:
+            validation_service = self._get_service('validation')
+            
+            input_file = kwargs['input_file']
+            output_file = kwargs['output_file']
+            validation_rules = kwargs.get('validation_rules', None)
+            
+            logger.info(f"Starting validation and enrichment")
+            logger.info(f"  Input: {input_file}")
+            logger.info(f"  Output: {output_file}")
+            
+            result = validation_service.validate_and_enrich(
+                input_file=input_file,
+                output_file=output_file,
+                validation_rules=validation_rules,
+                context=None  # Could pass progress context here
+            )
+            
+            logger.info(f"Validation completed: {result.get('count', 0)} records")
+            logger.info(f"  Valid: {result.get('stats', {}).get('records_valid', 0)}")
+            logger.info(f"  Invalid: {result.get('stats', {}).get('records_invalid', 0)}")
+            
+            return {
+                'status': 'success',
+                'output_file': output_file,
+                'records_processed': result.get('count', 0),
+                'stats': result.get('stats', {})
+            }
+        
+        finally:
+            if file_handler:
+                logger.removeHandler(file_handler)
+                file_handler.close()
+
+
+# At the end of the file, verify registration happened
 _registry = StepRegistry()
 
 def get_registry() -> StepRegistry:
-    """Get the global step registry."""
+    """Get the global step registry instance."""
     return _registry
+
+logger.info(f"Registry initialized with {len(_registry._steps)} steps: {list(_registry._steps.keys())}")
