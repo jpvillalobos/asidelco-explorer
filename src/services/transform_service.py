@@ -5,6 +5,10 @@ from typing import List, Dict, Any, Optional, Union
 import logging
 import pandas as pd
 from pathlib import Path
+import json
+from unidecode import unidecode
+from dateutil import parser as date_parser
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -115,5 +119,233 @@ class TransformService:
             
             logger.info(f"Merged {len(dfs)} files into {output_file}")
             return output_file
-        
+
         raise ValueError("No files to merge")
+
+    def flatten_normalize(
+        self,
+        input_file: str,
+        output_file: str,
+        normalize_text: bool = True,
+        normalize_dates: bool = True,
+        uppercase_fields: Optional[List[str]] = None,
+        titlecase_fields: Optional[List[str]] = None,
+        context: Optional[object] = None
+    ) -> Dict[str, Any]:
+        """
+        Flatten nested JSON structure and normalize data.
+
+        Args:
+            input_file: Path to merged JSON file with nested structure
+            output_file: Path to output flattened/normalized JSON file
+            normalize_text: Whether to uppercase and remove accents from text fields
+            normalize_dates: Whether to normalize date fields to ISO format
+            uppercase_fields: DEPRECATED - all text is uppercased now
+            titlecase_fields: DEPRECATED - all text is uppercased now
+            context: Optional context for progress reporting
+
+        Returns:
+            Dict with status, count, and stats
+        """
+        logger.info(f"Starting flatten and normalize operation")
+        logger.info(f"  Input: {input_file}")
+        logger.info(f"  Output: {output_file}")
+        logger.info(f"  Normalize text: {normalize_text}")
+        logger.info(f"  Normalize dates: {normalize_dates}")
+
+        # Read input JSON
+        input_path = Path(input_file)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_file}")
+
+        logger.info(f"Loading merged data from {input_file}")
+        with open(input_file, 'r', encoding='utf-8') as f:
+            merged_data = json.load(f)
+
+        total_records = len(merged_data)
+        logger.info(f"Loaded {total_records} records")
+
+        if context:
+            context.report_progress(0, total_records, "Starting data flattening and normalization")
+
+        flattened_data = []
+        stats = {
+            'total_records': total_records,
+            'processed': 0,
+            'errors': 0,
+            'text_normalized_count': 0,
+            'dates_normalized_count': 0,
+            'numeric_fields_cleaned': 0,
+            'field_names_sanitized': 0
+        }
+
+        for i, record in enumerate(merged_data):
+            try:
+                # Create flattened record
+                flat_record = {}
+
+                # Add record_id first
+                flat_record['record_id'] = record.get('record_id', f'rec_{i}')
+
+                # Flatten csv_data fields with prefix
+                if 'csv_data' in record and record['csv_data']:
+                    for key, value in record['csv_data'].items():
+                        sanitized_key = self._sanitize_field_name(f'csv_{key}')
+                        flat_record[sanitized_key] = value
+                        if sanitized_key != f'csv_{key}':
+                            stats['field_names_sanitized'] += 1
+
+                # Flatten project_data fields with prefix
+                if 'project_data' in record and record['project_data']:
+                    for key, value in record['project_data'].items():
+                        sanitized_key = self._sanitize_field_name(f'project_{key}')
+                        flat_record[sanitized_key] = value
+                        if sanitized_key != f'project_{key}':
+                            stats['field_names_sanitized'] += 1
+
+                # Flatten professional_data fields with prefix
+                if 'professional_data' in record and record['professional_data']:
+                    for key, value in record['professional_data'].items():
+                        sanitized_key = self._sanitize_field_name(f'professional_{key}')
+                        flat_record[sanitized_key] = value
+                        if sanitized_key != f'professional_{key}':
+                            stats['field_names_sanitized'] += 1
+
+                # Add metadata fields
+                if 'metadata' in record and record['metadata']:
+                    for key, value in record['metadata'].items():
+                        sanitized_key = self._sanitize_field_name(f'metadata_{key}')
+                        flat_record[sanitized_key] = value
+                        if sanitized_key != f'metadata_{key}':
+                            stats['field_names_sanitized'] += 1
+
+                # Clean numeric fields (remove trailing decimals)
+                numeric_cleaned = self._clean_numeric_fields(flat_record)
+                stats['numeric_fields_cleaned'] += numeric_cleaned
+
+                # Normalize text fields (uppercase all text)
+                if normalize_text:
+                    text_normalized = self._normalize_text_fields(flat_record)
+                    stats['text_normalized_count'] += text_normalized
+
+                # Normalize date fields
+                if normalize_dates:
+                    dates_normalized = self._normalize_date_fields(flat_record)
+                    stats['dates_normalized_count'] += dates_normalized
+
+                flattened_data.append(flat_record)
+                stats['processed'] += 1
+
+                if context:
+                    context.report_progress(
+                        i + 1,
+                        total_records,
+                        f"Processed record {i + 1}/{total_records}",
+                        {"record_id": flat_record.get('record_id', 'unknown')}
+                    )
+
+            except Exception as e:
+                logger.error(f"Error processing record {i}: {e}")
+                stats['errors'] += 1
+
+        # Ensure output directory exists
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write flattened data
+        logger.info(f"Writing {len(flattened_data)} flattened records to {output_file}")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(flattened_data, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"Flatten and normalize completed")
+        logger.info(f"  Records processed: {stats['processed']}")
+        logger.info(f"  Errors: {stats['errors']}")
+        logger.info(f"  Text fields normalized: {stats['text_normalized_count']}")
+        logger.info(f"  Date fields normalized: {stats['dates_normalized_count']}")
+        logger.info(f"  Numeric fields cleaned: {stats['numeric_fields_cleaned']}")
+        logger.info(f"  Field names sanitized: {stats['field_names_sanitized']}")
+
+        return {
+            'status': 'success',
+            'output_file': output_file,
+            'count': len(flattened_data),
+            'stats': stats
+        }
+
+    def _normalize_text_fields(
+        self,
+        record: Dict[str, Any],
+        uppercase_fields: List[str],
+        titlecase_fields: List[str]
+    ) -> int:
+        """
+        Normalize text fields: remove accents and apply case formatting.
+
+        Returns:
+            Number of fields normalized
+        """
+        normalized_count = 0
+
+        for key, value in list(record.items()):
+            if not isinstance(value, str) or not value:
+                continue
+
+            original_value = value
+
+            # Remove accents
+            value = unidecode(value)
+
+            # Apply case formatting based on field patterns
+            key_lower = key.lower()
+
+            # Check if field should be uppercased
+            if any(pattern in key_lower for pattern in uppercase_fields):
+                value = value.upper()
+            # Check if field should be title cased
+            elif any(pattern in key_lower for pattern in titlecase_fields):
+                value = value.title()
+
+            # Update record if value changed
+            if value != original_value:
+                record[key] = value
+                normalized_count += 1
+
+        return normalized_count
+
+    def _normalize_date_fields(self, record: Dict[str, Any]) -> int:
+        """
+        Normalize date fields to ISO format (YYYY-MM-DD).
+
+        Returns:
+            Number of date fields normalized
+        """
+        normalized_count = 0
+
+        # Common date field patterns
+        date_patterns = ['fecha', 'date', 'timestamp']
+
+        for key, value in list(record.items()):
+            if not isinstance(value, str) or not value:
+                continue
+
+            key_lower = key.lower()
+
+            # Check if this looks like a date field
+            if any(pattern in key_lower for pattern in date_patterns):
+                try:
+                    # Try to parse the date
+                    parsed_date = date_parser.parse(value)
+
+                    # Convert to ISO format (YYYY-MM-DD)
+                    iso_date = parsed_date.strftime('%Y-%m-%d')
+
+                    if iso_date != value:
+                        record[key] = iso_date
+                        normalized_count += 1
+
+                except (ValueError, TypeError, date_parser.ParserError) as e:
+                    # If parsing fails, keep original value
+                    logger.debug(f"Could not parse date field '{key}' with value '{value}': {e}")
+                    pass
+
+        return normalized_count

@@ -100,6 +100,7 @@ class StepRegistry:
         # Transform Stage
         self.register('parse_html', self._parse_html)
         self.register('merge_data', self._merge_data)  # ← MAKE SURE THIS LINE EXISTS
+        self.register('flatten_normalize', self._flatten_normalize)
         self.register('transform_data', self._transform_data)
         self.register('validate_enrich', self._validate_enrich)
         
@@ -486,39 +487,90 @@ class StepRegistry:
         """Validate and enrich merged data"""
         file_handler = self._setup_step_logging('validation', 'validate_enrich')
         logger = logging.getLogger('services.validation_enrichment_service')
-        
+
         if file_handler:
             logger.addHandler(file_handler)
-        
+
         try:
             validation_service = self._get_service('validation')
-            
+
             input_file = kwargs['input_file']
             output_file = kwargs['output_file']
             validation_rules = kwargs.get('validation_rules', None)
-            
+
             logger.info(f"Starting validation and enrichment")
             logger.info(f"  Input: {input_file}")
             logger.info(f"  Output: {output_file}")
-            
+
             result = validation_service.validate_and_enrich(
                 input_file=input_file,
                 output_file=output_file,
                 validation_rules=validation_rules,
                 context=None  # Could pass progress context here
             )
-            
+
             logger.info(f"Validation completed: {result.get('count', 0)} records")
             logger.info(f"  Valid: {result.get('stats', {}).get('records_valid', 0)}")
             logger.info(f"  Invalid: {result.get('stats', {}).get('records_invalid', 0)}")
-            
+
             return {
                 'status': 'success',
                 'output_file': output_file,
                 'records_processed': result.get('count', 0),
                 'stats': result.get('stats', {})
             }
-        
+
+        finally:
+            if file_handler:
+                logger.removeHandler(file_handler)
+                file_handler.close()
+
+
+    def _flatten_normalize(self, **kwargs) -> Dict[str, Any]:
+        """Flatten nested JSON and normalize data"""
+        file_handler = self._setup_step_logging('transform', 'flatten_normalize')
+        logger = logging.getLogger('services.transform_service')
+
+        if file_handler:
+            logger.addHandler(file_handler)
+
+        try:
+            transform_service = self._get_service('transform')
+
+            input_file = kwargs['input_file']
+            output_file = kwargs['output_file']
+            normalize_text = kwargs.get('normalize_text', True)
+            normalize_dates = kwargs.get('normalize_dates', True)
+            uppercase_fields = kwargs.get('uppercase_fields', None)
+            titlecase_fields = kwargs.get('titlecase_fields', None)
+
+            logger.info(f"Starting flatten and normalize")
+            logger.info(f"  Input: {input_file}")
+            logger.info(f"  Output: {output_file}")
+            logger.info(f"  Normalize text: {normalize_text}")
+            logger.info(f"  Normalize dates: {normalize_dates}")
+
+            result = transform_service.flatten_normalize(
+                input_file=input_file,
+                output_file=output_file,
+                normalize_text=normalize_text,
+                normalize_dates=normalize_dates,
+                uppercase_fields=uppercase_fields,
+                titlecase_fields=titlecase_fields,
+                context=None  # Could pass progress context here
+            )
+
+            logger.info(f"Flatten and normalize completed: {result.get('count', 0)} records")
+            logger.info(f"  Text fields normalized: {result.get('stats', {}).get('text_normalized_count', 0)}")
+            logger.info(f"  Date fields normalized: {result.get('stats', {}).get('dates_normalized_count', 0)}")
+
+            return {
+                'status': 'success',
+                'output_file': output_file,
+                'records_processed': result.get('count', 0),
+                'stats': result.get('stats', {})
+            }
+
         finally:
             if file_handler:
                 logger.removeHandler(file_handler)

@@ -69,6 +69,14 @@ pipeline:
             professionals_json_dir: data/output/professionals/json
             output_file: data/output/merged.json
 
+        - name: flatten_normalize
+          title: Flatten and Normalize Data
+          args:
+            input_file: data/output/merged.json
+            output_file: data/output/flattened.json
+            normalize_text: true
+            normalize_dates: true
+
     - id: enhance
       title: Enhance
       description: Validate, enrich, and add embeddings
@@ -76,7 +84,7 @@ pipeline:
         - name: validate_enrich
           title: Validate and Enrich Data
           args:
-            input_file: data/output/merged.json
+            input_file: data/output/flattened.json
             output_file: data/output/enriched.json
             validation_rules: null
 
