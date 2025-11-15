@@ -37,7 +37,7 @@ pipeline:
             input_dir: data/output/projects/html
             base_url: https://servicios.cfia.or.cr
             directory_url: https://servicios.cfia.or.cr/ListadoMiembros/Miembros/
-            max_members: 100
+            max_members: 1000000
             output_dir: data/output/professionals
             rate_limit: 0.5
             max_retries: 3
