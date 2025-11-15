@@ -1016,7 +1016,7 @@ def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
                 )
             elif isinstance(arg_value, int):
                 # Special handling for specific parameters
-                if arg_name.lower() in ['max_retries', 'max_members']:
+                if arg_name.lower() in ['max_retries']:
                     edited_args[arg_name] = st.number_input(
                         arg_name,
                         value=arg_value,
@@ -1026,6 +1026,16 @@ def render_standard_step_config(step_data: dict, stage_idx: int, step_idx: int):
                         key=arg_input_key,
                         help=f"Number of retry attempts (1-100)" if 'retries' in arg_name.lower() else None
                     )
+                elif arg_name.lower() in ['max_members']:
+                    edited_args[arg_name] = st.number_input(
+                        arg_name,
+                        value=arg_value,
+                        min_value=1,
+                        max_value=1000000,
+                        step=1,
+                        key=arg_input_key,
+                        help=f"Number members (1-1000000)" if 'members' in arg_name.lower() else None
+                    )    
                 elif arg_name.lower() == 'timeout':
                     edited_args[arg_name] = st.number_input(
                         arg_name,
