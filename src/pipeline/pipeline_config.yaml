@@ -54,13 +54,6 @@ pipeline:
             output_dir: data/output/projects/json
             save_json: true
 
-        - name: parse_html
-          title: Parse Professional HTML to JSON
-          args:
-            input_dir: data/output/professionals/html
-            output_dir: data/output/professionals/json
-            save_json: true
-
         - name: merge_data
           title: Merge CSV + Projects + Professionals
           args:
@@ -79,12 +72,35 @@ pipeline:
 
     - id: enhance
       title: Enhance
-      description: Validate, enrich, and add embeddings
+      description: Add geocoding, AI summaries, and validate data
       steps:
-        - name: validate_enrich
-          title: Validate and Enrich Data
+        - name: add_geocoding
+          title: Add Geocoding (Lat/Lon)
           args:
             input_file: data/output/flattened.json
+            output_file: data/output/geocoded.json
+            address_field: project_direccion_exacta
+            province_field: project_provincia
+            canton_field: project_canton
+            district_field: project_distrito
+            country: Costa Rica
+            rate_limit: 1.0
+
+        - name: generate_summaries
+          title: Generate AI Project Summaries
+          args:
+            input_file: data/output/geocoded.json
+            output_file: data/output/summarized.json
+            summary_field: resumen
+            model: gpt-4o-mini
+            max_tokens: 300
+            temperature: 0.3
+            skip_existing: true
+
+        - name: validate_enrich
+          title: Validate and Final Enrichment
+          args:
+            input_file: data/output/summarized.json
             output_file: data/output/enriched.json
             validation_rules: null
 
@@ -92,7 +108,7 @@ pipeline:
           title: Generate Text Embeddings
           args:
             input_file: data/output/enriched.json
-            text_field: project_data.Descripción del proyecto
+            text_field: resumen
             model: openai
             output_file: data/output/enriched_with_embeddings.json
 

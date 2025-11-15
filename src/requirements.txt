@@ -21,3 +21,5 @@ lxml>=4.9.0
 openpyxl>=3.1.0
 chardet>=5.0.0
 PyYAML>=6.0.1
+geopy>=2.4.0
+openai>=1.0.0

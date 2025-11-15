@@ -423,6 +423,8 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             "merge_data": "merge_data",
             "flatten_normalize": "flatten_normalize",
             "transform_data": "transform_data",
+            "add_geocoding": "add_geocoding",
+            "generate_summaries": "generate_summaries",
             "validate_enrich": "validate_enrich",
             "generate_embeddings": "generate_embeddings",
             "load_opensearch": "load_opensearch",

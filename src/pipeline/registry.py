@@ -64,6 +64,9 @@ class StepRegistry:
             elif service_name == 'validation':
                 from services.validation_enrichment_service import ValidationEnrichmentService
                 self._services['validation'] = ValidationEnrichmentService()
+            elif service_name == 'enhancement':  # ADD THIS
+                from services.enhancement_service import EnhancementService
+                self._services['enhancement'] = EnhancementService()
             elif service_name == 'embedding':
                 from services.embedding_service import EmbeddingService
                 self._services['embedding'] = EmbeddingService()
@@ -99,12 +102,14 @@ class StepRegistry:
         
         # Transform Stage
         self.register('parse_html', self._parse_html)
-        self.register('merge_data', self._merge_data)  # ← MAKE SURE THIS LINE EXISTS
+        self.register('merge_data', self._merge_data)
         self.register('flatten_normalize', self._flatten_normalize)
         self.register('transform_data', self._transform_data)
         self.register('validate_enrich', self._validate_enrich)
         
-        # Enhance Stage
+        # Enhance Stage - ADD THESE TWO LINES
+        self.register('add_geocoding', self._add_geocoding)
+        self.register('generate_summaries', self._generate_summaries)
         self.register('generate_embeddings', self._generate_embeddings)
         
         # Load Stage
@@ -571,6 +576,108 @@ class StepRegistry:
                 'stats': result.get('stats', {})
             }
 
+        finally:
+            if file_handler:
+                logger.removeHandler(file_handler)
+                file_handler.close()
+
+
+    def _add_geocoding(self, **kwargs) -> Dict[str, Any]:
+        """Add geocoding (lat/lon) to records"""
+        file_handler = self._setup_step_logging('enhancement', 'add_geocoding')
+        logger = logging.getLogger('services.enhancement_service')
+        
+        if file_handler:
+            logger.addHandler(file_handler)
+        
+        try:
+            enhancement_service = self._get_service('enhancement')
+            
+            input_file = kwargs['input_file']
+            output_file = kwargs['output_file']
+            address_field = kwargs.get('address_field', 'project_direccion_exacta')
+            province_field = kwargs.get('province_field', 'project_provincia')
+            canton_field = kwargs.get('canton_field', 'project_canton')
+            district_field = kwargs.get('district_field', 'project_distrito')
+            country = kwargs.get('country', 'Costa Rica')
+            rate_limit = kwargs.get('rate_limit', 1.0)
+            
+            logger.info(f"Starting geocoding enhancement")
+            logger.info(f"  Input: {input_file}")
+            logger.info(f"  Output: {output_file}")
+            
+            result = enhancement_service.add_geocoding(
+                input_file=input_file,
+                output_file=output_file,
+                address_field=address_field,
+                province_field=province_field,
+                canton_field=canton_field,
+                district_field=district_field,
+                country=country,
+                rate_limit=rate_limit,
+                context=None
+            )
+            
+            logger.info(f"Geocoding completed: {result.get('stats', {}).get('geocoded', 0)} geocoded, {result.get('stats', {}).get('cached', 0)} from cache")
+            
+            return {
+                'status': 'success',
+                'output_file': output_file,
+                'records_processed': result.get('count', 0),
+                'stats': result.get('stats', {})
+            }
+        
+        finally:
+            if file_handler:
+                logger.removeHandler(file_handler)
+                file_handler.close()
+    
+    def _generate_summaries(self, **kwargs) -> Dict[str, Any]:
+        """Generate AI summaries for records"""
+        file_handler = self._setup_step_logging('enhancement', 'generate_summaries')
+        logger = logging.getLogger('services.enhancement_service')
+        
+        if file_handler:
+            logger.addHandler(file_handler)
+        
+        try:
+            enhancement_service = self._get_service('enhancement')
+            
+            input_file = kwargs['input_file']
+            output_file = kwargs['output_file']
+            source_fields = kwargs.get('source_fields', None)
+            summary_field = kwargs.get('summary_field', 'resumen')
+            model = kwargs.get('model', 'gpt-4o-mini')
+            max_tokens = kwargs.get('max_tokens', 300)
+            temperature = kwargs.get('temperature', 0.3)
+            skip_existing = kwargs.get('skip_existing', True)
+            
+            logger.info(f"Starting AI summarization")
+            logger.info(f"  Input: {input_file}")
+            logger.info(f"  Output: {output_file}")
+            logger.info(f"  Model: {model}")
+            
+            result = enhancement_service.generate_summaries(
+                input_file=input_file,
+                output_file=output_file,
+                source_fields=source_fields,
+                summary_field=summary_field,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                skip_existing=skip_existing,
+                context=None
+            )
+            
+            logger.info(f"Summarization completed: {result.get('stats', {}).get('summarized', 0)} summaries generated")
+            
+            return {
+                'status': 'success',
+                'output_file': output_file,
+                'records_processed': result.get('count', 0),
+                'stats': result.get('stats', {})
+            }
+        
         finally:
             if file_handler:
                 logger.removeHandler(file_handler)

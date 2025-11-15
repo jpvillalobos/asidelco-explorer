@@ -6,6 +6,7 @@ import logging
 import pandas as pd
 from pathlib import Path
 import json
+import re
 from unidecode import unidecode
 from dateutil import parser as date_parser
 from datetime import datetime
@@ -140,8 +141,8 @@ class TransformService:
             output_file: Path to output flattened/normalized JSON file
             normalize_text: Whether to uppercase and remove accents from text fields
             normalize_dates: Whether to normalize date fields to ISO format
-            uppercase_fields: DEPRECATED - all text is uppercased now
-            titlecase_fields: DEPRECATED - all text is uppercased now
+            uppercase_fields: List of field patterns to uppercase (default: name, address fields)
+            titlecase_fields: List of field patterns to titlecase (default: description fields)
             context: Optional context for progress reporting
 
         Returns:
@@ -152,6 +153,12 @@ class TransformService:
         logger.info(f"  Output: {output_file}")
         logger.info(f"  Normalize text: {normalize_text}")
         logger.info(f"  Normalize dates: {normalize_dates}")
+
+        # Default field patterns
+        if uppercase_fields is None:
+            uppercase_fields = ['name', 'nombre', 'apellido', 'address', 'direccion', 'province', 'provincia', 'canton', 'district', 'distrito']
+        if titlecase_fields is None:
+            titlecase_fields = ['description', 'descripcion', 'notes', 'notas', 'observaciones']
 
         # Read input JSON
         input_path = Path(input_file)
@@ -164,6 +171,16 @@ class TransformService:
 
         total_records = len(merged_data)
         logger.info(f"Loaded {total_records} records")
+
+        if total_records == 0:
+            logger.warning("No records found in input file!")
+            return {
+                'status': 'warning',
+                'message': 'No records to process',
+                'output_file': output_file,
+                'count': 0,
+                'stats': {}
+            }
 
         if context:
             context.report_progress(0, total_records, "Starting data flattening and normalization")
@@ -223,9 +240,9 @@ class TransformService:
                 numeric_cleaned = self._clean_numeric_fields(flat_record)
                 stats['numeric_fields_cleaned'] += numeric_cleaned
 
-                # Normalize text fields (uppercase all text)
+                # Normalize text fields
                 if normalize_text:
-                    text_normalized = self._normalize_text_fields(flat_record)
+                    text_normalized = self._normalize_text_fields(flat_record, uppercase_fields, titlecase_fields)
                     stats['text_normalized_count'] += text_normalized
 
                 # Normalize date fields
@@ -236,7 +253,7 @@ class TransformService:
                 flattened_data.append(flat_record)
                 stats['processed'] += 1
 
-                if context:
+                if context and (i + 1) % 10 == 0:  # Report every 10 records
                     context.report_progress(
                         i + 1,
                         total_records,
@@ -245,7 +262,7 @@ class TransformService:
                     )
 
             except Exception as e:
-                logger.error(f"Error processing record {i}: {e}")
+                logger.error(f"Error processing record {i}: {e}", exc_info=True)
                 stats['errors'] += 1
 
         # Ensure output directory exists
@@ -265,12 +282,82 @@ class TransformService:
         logger.info(f"  Numeric fields cleaned: {stats['numeric_fields_cleaned']}")
         logger.info(f"  Field names sanitized: {stats['field_names_sanitized']}")
 
+        if context:
+            context.report_progress(
+                total_records,
+                total_records,
+                "Flatten and normalize complete",
+                stats
+            )
+
         return {
             'status': 'success',
             'output_file': output_file,
             'count': len(flattened_data),
             'stats': stats
         }
+
+    def _sanitize_field_name(self, field_name: str) -> str:
+        """
+        Sanitize field name to be JSON/database friendly.
+        
+        - Removes accents (ó → o, ñ → n, etc.)
+        - Converts to lowercase
+        - Replaces spaces and special chars with underscores
+        - Removes consecutive underscores
+        - Removes leading/trailing underscores
+        
+        Args:
+            field_name: Original field name
+            
+        Returns:
+            Sanitized field name
+        """
+        # FIRST: Remove accents (this is what was missing!)
+        sanitized = unidecode(field_name)
+        
+        # Convert to lowercase
+        sanitized = sanitized.lower()
+        
+        # Replace spaces and special characters with underscores
+        sanitized = re.sub(r'[^a-z0-9_]', '_', sanitized)
+        
+        # Remove consecutive underscores
+        sanitized = re.sub(r'_+', '_', sanitized)
+        
+        # Remove leading/trailing underscores
+        sanitized = sanitized.strip('_')
+        
+        return sanitized
+
+    def _clean_numeric_fields(self, record: Dict[str, Any]) -> int:
+        """
+        Clean numeric fields by removing unnecessary decimal points.
+        Example: "123.0" -> "123"
+        
+        Args:
+            record: Record to clean
+            
+        Returns:
+            Number of fields cleaned
+        """
+        cleaned_count = 0
+        
+        for key, value in list(record.items()):
+            if not isinstance(value, str):
+                continue
+            
+            # Try to convert to float and check if it's a whole number
+            try:
+                float_value = float(value)
+                if float_value.is_integer():
+                    record[key] = str(int(float_value))
+                    cleaned_count += 1
+            except (ValueError, TypeError):
+                # Not a numeric string, skip
+                pass
+        
+        return cleaned_count
 
     def _normalize_text_fields(
         self,
@@ -279,12 +366,23 @@ class TransformService:
         titlecase_fields: List[str]
     ) -> int:
         """
-        Normalize text fields: remove accents and apply case formatting.
+        Normalize text fields: remove accents and uppercase ALL values except emails.
+
+        Args:
+            record: Record to normalize
+            uppercase_fields: List of field patterns to uppercase (DEPRECATED - all fields uppercased except emails)
+            titlecase_fields: List of field patterns to titlecase (DEPRECATED - all fields uppercased except emails)
 
         Returns:
             Number of fields normalized
         """
         normalized_count = 0
+
+        # Email field patterns
+        email_patterns = ['email', 'correo', 'mail', 'e_mail', 'e-mail']
+        
+        # Email regex pattern to detect email values
+        email_regex = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
         for key, value in list(record.items()):
             if not isinstance(value, str) or not value:
@@ -294,16 +392,18 @@ class TransformService:
 
             # Remove accents
             value = unidecode(value)
-
-            # Apply case formatting based on field patterns
+            
+            # Check if this is an email field (by field name or value pattern)
             key_lower = key.lower()
-
-            # Check if field should be uppercased
-            if any(pattern in key_lower for pattern in uppercase_fields):
+            is_email_field = any(pattern in key_lower for pattern in email_patterns)
+            is_email_value = email_regex.match(value.strip())
+            
+            if is_email_field or is_email_value:
+                # Keep email values as lowercase (standard for emails)
+                value = value.lower()
+            else:
+                # Uppercase ALL other text values
                 value = value.upper()
-            # Check if field should be title cased
-            elif any(pattern in key_lower for pattern in titlecase_fields):
-                value = value.title()
 
             # Update record if value changed
             if value != original_value:
@@ -316,13 +416,16 @@ class TransformService:
         """
         Normalize date fields to ISO format (YYYY-MM-DD).
 
+        Args:
+            record: Record to normalize
+
         Returns:
             Number of date fields normalized
         """
         normalized_count = 0
 
         # Common date field patterns
-        date_patterns = ['fecha', 'date', 'timestamp']
+        date_patterns = ['fecha', 'date', 'timestamp', 'created', 'updated', 'modified']
 
         for key, value in list(record.items()):
             if not isinstance(value, str) or not value:
@@ -334,7 +437,7 @@ class TransformService:
             if any(pattern in key_lower for pattern in date_patterns):
                 try:
                     # Try to parse the date
-                    parsed_date = date_parser.parse(value)
+                    parsed_date = date_parser.parse(value, fuzzy=False)
 
                     # Convert to ISO format (YYYY-MM-DD)
                     iso_date = parsed_date.strftime('%Y-%m-%d')
