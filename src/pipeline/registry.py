@@ -648,7 +648,7 @@ class StepRegistry:
             source_fields = kwargs.get('source_fields', None)
             summary_field = kwargs.get('summary_field', 'resumen')
             model = kwargs.get('model', 'gpt-4o-mini')
-            max_tokens = kwargs.get('max_tokens', 300)
+            max_completion_tokens = kwargs.get('max_completion_tokens', 300)
             temperature = kwargs.get('temperature', 0.3)
             skip_existing = kwargs.get('skip_existing', True)
             
@@ -663,7 +663,7 @@ class StepRegistry:
                 source_fields=source_fields,
                 summary_field=summary_field,
                 model=model,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_completion_tokens,
                 temperature=temperature,
                 skip_existing=skip_existing,
                 context=None

@@ -56,20 +56,30 @@ class Pipeline:
         logger.info(f"Pipeline initialized for workspace: {self.workspace_dir}")
         logger.info(f"Logging to: {log_file}")
 
-    def add_step(self, step_type, **kwargs):
-        """Add a step to the pipeline."""
-        self.steps.append((step_type, kwargs))
-        logger.debug(f"Added step: {step_type} with args: {kwargs}")
+    def add_step(self, step_type, log_level: str = "INFO", **kwargs):  # ADD log_level parameter
+        """Add a step to the pipeline with custom log level."""
+        self.steps.append((step_type, log_level, kwargs))  # Store log_level with step
+        logger.debug(f"Added step: {step_type} with log level {log_level} and args: {kwargs}")
 
     def run(self):
         """Execute all added steps."""
         logger.info(f"Starting pipeline execution with {len(self.steps)} step(s)")
 
         # Resolve paths relative to workspace
-        for i, (step_type, kwargs) in enumerate(self.steps, 1):
+        for i, (step_type, log_level, kwargs) in enumerate(self.steps, 1):  # UNPACK log_level
             # Get step name - handle both enum and string types
             step_name = step_type.value if hasattr(step_type, 'value') else step_type
-            logger.info(f"Step {i}/{len(self.steps)}: {step_name}")
+            logger.info(f"Step {i}/{len(self.steps)}: {step_name} (Log Level: {log_level})")
+
+            # SET LOG LEVEL FOR THIS STEP
+            step_logger = logging.getLogger()
+            original_level = step_logger.level
+            
+            # Convert string log level to logging constant
+            numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+            step_logger.setLevel(numeric_level)
+            
+            logger.info(f"Set log level to {log_level} for step {step_name}")
 
             # Convert relative paths to absolute paths within workspace
             resolved_kwargs = {}
@@ -115,6 +125,10 @@ class Pipeline:
             except Exception as e:
                 logger.error(f"Step {step_name} failed: {str(e)}", exc_info=True)
                 raise
+            finally:
+                # RESTORE ORIGINAL LOG LEVEL
+                step_logger.setLevel(original_level)
+                logger.info(f"Restored log level to {logging.getLevelName(original_level)}")
 
         logger.info("Pipeline execution completed successfully")
         return result

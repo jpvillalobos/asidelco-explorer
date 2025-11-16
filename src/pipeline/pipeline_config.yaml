@@ -4,6 +4,7 @@ pipeline:
   name: asidelco-explorer
   description: End-to-end ingestion, crawling, transformation, enhancement, and loading
   workspace_root: workspaces
+  default_log_level: INFO  # ADD THIS - default for all steps
 
   stages:
     - id: ingest
@@ -12,6 +13,7 @@ pipeline:
       steps:
         - name: normalize_csv
           title: Normalize Input File
+          log_level: INFO  # ADD THIS to each step
           args:
             input_file: data/input/Ene-Mar25.xlsx
             output_file: data/output/normalized.csv
@@ -22,6 +24,7 @@ pipeline:
       steps:
         - name: crawl_projects
           title: Crawl Projects
+          log_level: INFO
           args:
             input_file: data/output/normalized.csv
             base_url: https://servicios.cfia.or.cr
@@ -33,6 +36,7 @@ pipeline:
 
         - name: crawl_professionals
           title: Crawl Professionals
+          log_level: INFO
           args:
             input_dir: data/output/projects/html
             base_url: https://servicios.cfia.or.cr
@@ -49,6 +53,7 @@ pipeline:
       steps:
         - name: parse_html
           title: Parse Project HTML to JSON
+          log_level: INFO
           args:
             input_dir: data/output/projects/html
             output_dir: data/output/projects/json
@@ -56,6 +61,7 @@ pipeline:
 
         - name: merge_data
           title: Merge CSV + Projects + Professionals
+          log_level: INFO
           args:
             csv_file: data/output/normalized.csv
             projects_json_dir: data/output/projects/json
@@ -64,6 +70,7 @@ pipeline:
 
         - name: flatten_normalize
           title: Flatten and Normalize Data
+          log_level: INFO
           args:
             input_file: data/output/merged.json
             output_file: data/output/flattened.json
@@ -76,6 +83,7 @@ pipeline:
       steps:
         - name: add_geocoding
           title: Add Geocoding (Lat/Lon)
+          log_level: INFO
           args:
             input_file: data/output/flattened.json
             output_file: data/output/geocoded.json
@@ -88,17 +96,19 @@ pipeline:
 
         - name: generate_summaries
           title: Generate AI Project Summaries
+          log_level: INFO
           args:
             input_file: data/output/geocoded.json
             output_file: data/output/summarized.json
             summary_field: resumen
             model: gpt-4o-mini
-            max_tokens: 300
+            max_completion_tokens: 300
             temperature: 0.3
             skip_existing: true
 
         - name: validate_enrich
           title: Validate and Final Enrichment
+          log_level: INFO
           args:
             input_file: data/output/summarized.json
             output_file: data/output/enriched.json
@@ -106,6 +116,7 @@ pipeline:
 
         - name: generate_embeddings
           title: Generate Text Embeddings
+          log_level: INFO
           args:
             input_file: data/output/enriched.json
             text_field: resumen
@@ -118,6 +129,7 @@ pipeline:
       steps:
         - name: load_opensearch
           title: Load to OpenSearch
+          log_level: INFO
           args:
             input_file: data/output/enriched_with_embeddings.json
             host: localhost
@@ -126,6 +138,7 @@ pipeline:
 
         - name: load_neo4j
           title: Load to Neo4j
+          log_level: INFO
           args:
             input_file: data/output/enriched_with_embeddings.json
             uri: bolt://localhost:7687

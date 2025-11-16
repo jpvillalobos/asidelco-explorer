@@ -10,6 +10,7 @@ class StepConfig:
     """Step configuration"""
     name: str
     title: str
+    log_level: str = "INFO"  # ADD THIS
     args: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
@@ -28,6 +29,7 @@ class PipelineConfig:
     description: str
     workspace_root: str
     stages: List[StageConfig]
+    default_log_level: str = "INFO"  # ADD THIS (must be after non-default fields)
 
 def resolve_variables(config: Dict[str, Any], variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -112,6 +114,7 @@ def load_pipeline_config(config_path: Optional[Path] = None) -> Optional[Pipelin
             return None
     
     pipeline_data = config_dict.get("pipeline", {})
+    default_log_level = pipeline_data.get("default_log_level", "INFO")  # ADD THIS
     
     # Parse stages
     stages = []
@@ -122,6 +125,7 @@ def load_pipeline_config(config_path: Optional[Path] = None) -> Optional[Pipelin
             step = StepConfig(
                 name=step_data.get("name", ""),
                 title=step_data.get("title", ""),
+                log_level=step_data.get("log_level", default_log_level),  # ADD THIS
                 args=step_data.get("args", {})
             )
             steps.append(step)
@@ -139,6 +143,7 @@ def load_pipeline_config(config_path: Optional[Path] = None) -> Optional[Pipelin
         version=str(config_dict.get("version", "1.0")),
         description=pipeline_data.get("description", ""),
         workspace_root=pipeline_data.get("workspace_root", "workspaces"),
+        default_log_level=default_log_level,  # ADD THIS
         stages=stages
     )
 

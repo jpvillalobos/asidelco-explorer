@@ -130,6 +130,8 @@ def initialize_session_state():
         st.session_state.step_enabled = {}
     if 'step_args' not in st.session_state:
         st.session_state.step_args = {}
+    if 'step_log_levels' not in st.session_state:
+        st.session_state.step_log_levels = {}
     # New: runtime logs, history and stop flag
     if 'pipeline_logs' not in st.session_state:
         st.session_state.pipeline_logs = []
@@ -440,7 +442,7 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             step_enabled_key = f"enabled_{stage_idx}_{idx}"
 
             # Skip if disabled
-            if not st.session_state.step_enabled.get(step_enabled_key, True):
+            if not st.session_state.step_enabled.get(step_enabled_key, False):
                 step_name = step.get("name", f"step_{idx}")
                 step_title_val = step.get("title", step_name)
                 step_key = f"{step_name}_{step_title_val}"
@@ -471,6 +473,10 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             step_args_key = f"args_{stage_idx}_{idx}"
             custom_args = st.session_state.step_args.get(step_args_key, step.get("args", {}))
 
+            # GET LOG LEVEL FROM SESSION STATE
+            log_level_key = f"log_level_{stage_idx}_{idx}"
+            log_level = st.session_state.step_log_levels.get(log_level_key, step.get("log_level", "INFO"))
+
             # Update status with real-time UI feedback
             st.session_state.step_status[step_key] = {
                 "status": "running",
@@ -479,7 +485,7 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
             }
 
             # Show current step status
-            status_container.info(f"🔄 Running: {step_title_val}")
+            status_container.info(f"🔄 Running: {step_title_val} (Log: {log_level})")
             progress_bar.progress(0)
 
             # Validation
@@ -515,13 +521,13 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                 if not step_type:
                     raise ValueError(f"Unknown step type: {step_name}")
 
-                _append_log(f"Step '{step_title_val}' started")
+                _append_log(f"Step '{step_title_val}' started with log level: {log_level}")
 
                 # Show progress
                 progress_bar.progress(25)
 
-                # Execute step
-                pipeline.add_step(step_type, **custom_args)
+                # Execute step WITH LOG LEVEL
+                pipeline.add_step(step_type, log_level=log_level, **custom_args)
                 progress_bar.progress(50)
 
                 pipeline.run()
@@ -542,6 +548,7 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                     "step_name": step_name,
                     "title": step_title_val,
                     "state": "completed",
+                    "log_level": log_level,  # ADD THIS
                     "start_time": start_iso,
                     "end_time": end_iso,
                     "duration": round(end_t - start_t, 2)
@@ -566,6 +573,7 @@ def _execute_steps(stage_idx: int, stage_data: dict, step_indices: Optional[List
                     "step_name": step_name,
                     "title": step_title_val,
                     "state": "failed",
+                    "log_level": log_level,  # ADD THIS
                     "start_time": start_iso,
                     "end_time": end_iso,
                     "duration": round(end_t - start_t, 2)
@@ -748,12 +756,12 @@ def render_step_progress(step_title: str, step_name: str, step_data: dict, stage
     # Step container
     with st.container():
         # Header with checkbox
-        col1, col2, col3 = st.columns([4, 1, 1])
+        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
 
         with col1:
             # Enable/disable checkbox
             step_enabled_key = f"enabled_{stage_idx}_{step_idx}"
-            is_enabled = st.session_state.step_enabled.get(step_enabled_key, True)
+            is_enabled = st.session_state.step_enabled.get(step_enabled_key, False)
 
             new_enabled = st.checkbox(
                 f"{icon} **{step_title}**",
@@ -768,6 +776,26 @@ def render_step_progress(step_title: str, step_name: str, step_data: dict, stage
                 st.caption(f"💬 {message}")
 
         with col2:
+            # Log Level Selector
+            log_level_key = f"log_level_{stage_idx}_{step_idx}"
+            default_log_level = step_data.get("log_level", "INFO")
+
+            if log_level_key not in st.session_state.step_log_levels:
+                st.session_state.step_log_levels[log_level_key] = default_log_level
+
+            log_level = st.selectbox(
+                "Log",
+                options=["DEBUG", "INFO", "WARNING", "ERROR"],
+                index=["DEBUG", "INFO", "WARNING", "ERROR"].index(st.session_state.step_log_levels[log_level_key]),
+                key=log_level_key,
+                disabled=(status == "running"),
+                label_visibility="collapsed",
+                help="Set logging level for this step"
+            )
+
+            st.session_state.step_log_levels[log_level_key] = log_level
+
+        with col3:
             st.markdown(f"""
             <div style="
                 padding: 0.25rem 0.75rem;
@@ -782,7 +810,7 @@ def render_step_progress(step_title: str, step_name: str, step_data: dict, stage
             </div>
             """, unsafe_allow_html=True)
 
-        with col3:
+        with col4:
             # Retry button for failed/skipped steps
             if status in ("failed", "skipped") and not st.session_state.pipeline_running:
                 if st.button("↻ Retry", key=f"retry_{stage_idx}_{step_idx}", use_container_width=True):

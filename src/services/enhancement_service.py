@@ -388,8 +388,8 @@ class EnhancementService:
         output_file: str,
         source_fields: Optional[List[str]] = None,
         summary_field: str = "resumen",
-        model: str = "gpt-4o-mini",
-        max_tokens: int = 300,
+        model: str = "gpt-5-nano",
+        max_completion_tokens: int = 300,
         temperature: float = 0.3,
         skip_existing: bool = True,
         context: Optional[object] = None
@@ -403,7 +403,7 @@ class EnhancementService:
             source_fields: List of field names to include in summary (defaults to key project fields)
             summary_field: Name of field to store summary
             model: OpenAI model to use
-            max_tokens: Maximum tokens for summary
+            max_completion_tokens: Maximum tokens for summary
             temperature: Model temperature (0-1, lower = more focused)
             skip_existing: Skip records that already have summaries
             context: Optional context for progress reporting
@@ -474,8 +474,10 @@ Genera un resumen en español que incluya:
 - Ubicación (provincia, cantón, distrito, dirección)
 - Características principales (área, uso)
 - Profesional responsable
+- Identificación y carné del profesional responsable
 
-El resumen debe ser claro, informativo y no más de 3-4 oraciones."""
+El resumen debe ser claro, informativo y no más de 3-4 oraciones.
+El resumen deber estar orientado a facilitar el procesamiento de embeddings para este campo"""
         
         for i, record in enumerate(records):
             try:
@@ -512,7 +514,7 @@ El resumen debe ser claro, informativo y no más de 3-4 oraciones."""
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    max_tokens=max_tokens,
+                    max_completion_tokens=max_completion_tokens,
                     temperature=temperature
                 )
                 
