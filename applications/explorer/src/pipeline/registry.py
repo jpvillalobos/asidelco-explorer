@@ -337,37 +337,53 @@ class StepRegistry:
                 file_handler.close()
 
     def _generate_embeddings(self, **kwargs) -> Dict[str, Any]:
-        """Generate vector embeddings for text data."""
+        """Generate embeddings for documents"""
         file_handler = self._setup_step_logging('embedding', 'generate_embeddings')
         logger = logging.getLogger('services.embedding_service')
-
+        
         if file_handler:
             logger.addHandler(file_handler)
-
+        
         try:
             embedding_service = self._get_service('embedding')
+            
             input_file = kwargs['input_file']
-            text_column = kwargs['text_column']
-            model = kwargs.get('model', 'sbert')
             output_file = kwargs['output_file']
-
-            logger.info(f"Starting embedding generation: model={model}, column={text_column}")
-
+            text_field = kwargs.get('text_field', 'resumen')
+            embedding_field = kwargs.get('embedding_field', 'embedding')
+            provider = kwargs.get('provider', 'openai')
+            model = kwargs.get('model')
+            api_key = kwargs.get('api_key')
+            batch_size = kwargs.get('batch_size', 32)
+            
+            logger.info(f"Starting embedding generation")
+            logger.info(f"  Input: {input_file}")
+            logger.info(f"  Output: {output_file}")
+            logger.info(f"  Provider: {provider}")
+            logger.info(f"  Text field: {text_field}")
+            
             result = embedding_service.generate_embeddings(
                 input_file=input_file,
-                text_column=text_column,
+                output_file=output_file,
+                text_field=text_field,
+                embedding_field=embedding_field,
+                provider=provider,
                 model=model,
-                output_file=output_file
+                api_key=api_key,
+                batch_size=batch_size,
+                context=None
             )
-
-            logger.info(f"Embedding generation completed: {result.get('count', 0)} embeddings")
-
+            
+            logger.info(f"Embedding generation completed: {result.get('count', 0)} embeddings generated")
+            logger.info(f"  Dimension: {result.get('stats', {}).get('dimension', 'unknown')}")
+            
             return {
                 'status': 'success',
                 'output_file': output_file,
-                'embeddings_generated': result.get('count', 0)
+                'embeddings_generated': result.get('count', 0),
+                'stats': result.get('stats', {})
             }
-
+        
         finally:
             if file_handler:
                 logger.removeHandler(file_handler)
@@ -426,28 +442,45 @@ class StepRegistry:
 
         try:
             opensearch_service = self._get_service('opensearch')
+            
             input_file = kwargs['input_file']
             host = kwargs.get('host', 'localhost')
             port = kwargs.get('port', 9200)
             index_name = kwargs['index_name']
             auth = kwargs.get('auth')
+            use_ssl = kwargs.get('use_ssl', False)
+            verify_certs = kwargs.get('verify_certs', False)
+            batch_size = kwargs.get('batch_size', 500)
+            mappings = kwargs.get('mappings')
+            settings = kwargs.get('settings')
 
-            logger.info(f"Starting OpenSearch load: {host}:{port}/{index_name}")
+            logger.info(f"Starting OpenSearch load")
+            logger.info(f"  Host: {host}:{port}")
+            logger.info(f"  Index: {index_name}")
+            logger.info(f"  Batch size: {batch_size}")
 
             result = opensearch_service.load_data(
                 input_file=input_file,
                 host=host,
                 port=port,
                 index_name=index_name,
-                auth=auth
+                auth=auth,
+                use_ssl=use_ssl,
+                verify_certs=verify_certs,
+                batch_size=batch_size,
+                mappings=mappings,
+                settings=settings,
+                context=None
             )
 
-            logger.info(f"OpenSearch load completed: {result.get('count', 0)} records loaded")
+            logger.info(f"OpenSearch load completed: {result.get('count', 0)} records indexed")
+            logger.info(f"  Failed: {result.get('stats', {}).get('failed', 0)}")
 
             return {
                 'status': 'success',
                 'records_loaded': result.get('count', 0),
-                'index_name': index_name
+                'index_name': index_name,
+                'stats': result.get('stats', {})
             }
 
         finally:

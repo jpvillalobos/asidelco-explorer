@@ -33,12 +33,12 @@ services:
     volumes:
       - ./logs:/app/logs
     networks:
-      - cfia-network
+      - asidelco-network
 
   opensearch:
-    profiles: ["search"]
+    profiles: ["opensearch", "default", "local", "data-exploration"]
     image: opensearchproject/opensearch:2.11.0
-    container_name: cfia-opensearch
+    container_name: asidelco-opensearch
     environment:
       - discovery.type=single-node
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
@@ -49,28 +49,26 @@ services:
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     networks:
-      - cfia-network
+      - asidelco-network
 
   opensearch-dashboards:
-    profiles: ["dashboards"]
+    profiles: ["dashboards", "default", "local", "data-exploration"]
     image: opensearchproject/opensearch-dashboards:2.11.0
-    container_name: cfia-dashboards
+    container_name: asidelco-dashboards
     ports:
       - "5601:5601"
     environment:
       - OPENSEARCH_HOSTS=http://opensearch:9200
       - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
     networks:
-      - cfia-network
-    depends_on:
-      - opensearch
+      - asidelco-network
 
   api:
     profiles: ["api"]
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: cfia-api
+    container_name: asidelco-api
     ports:
       - "8000:8000"
     environment:
@@ -81,7 +79,7 @@ services:
       - ./data:/app/data
       - ./src:/app/src
     networks:
-      - cfia-network
+      - asidelco-network
     command: python -m uvicorn src.api.fastapi_app:app --host 0.0.0.0 --port 8000 --reload
 
   portainer:
@@ -103,6 +101,7 @@ services:
       - asidelco-network
 
   streamlit:
+    profiles: ["local", "streamlit"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -127,8 +126,6 @@ volumes:
   portainer_data:
 
 networks:
-  cfia-network:
-    driver: bridge
   asidelco-network:
     driver: bridge
 

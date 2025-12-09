@@ -118,7 +118,7 @@ pipeline:
           title: Generate Embeddings
           log_level: INFO
           args:
-            input_file: data/output/enriched.json
+            input_file: data/output/enhanced_with_summaries.json
             output_file: data/output/enriched_with_embeddings.json
             text_field: resumen
             embedding_field: embedding
