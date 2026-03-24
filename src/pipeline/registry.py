@@ -347,25 +347,32 @@ class StepRegistry:
         try:
             embedding_service = self._get_service('embedding')
             input_file = kwargs['input_file']
-            text_column = kwargs['text_column']
-            model = kwargs.get('model', 'sbert')
+            # Support both text_field and text_column parameter names
+            text_field = kwargs.get('text_field') or kwargs.get('text_column')
+            if not text_field:
+                raise ValueError("Either 'text_field' or 'text_column' must be provided")
+            model = kwargs.get('model', 'openai')
             output_file = kwargs['output_file']
 
-            logger.info(f"Starting embedding generation: model={model}, column={text_column}")
+            logger.info(f"Starting embedding generation: model={model}, field={text_field}")
 
             result = embedding_service.generate_embeddings(
                 input_file=input_file,
-                text_column=text_column,
+                text_field=text_field,
                 model=model,
                 output_file=output_file
             )
 
-            logger.info(f"Embedding generation completed: {result.get('count', 0)} embeddings")
+            # Updated to use new return values
+            logger.info(f"Embedding generation completed: {result.get('new_embeddings', 0)} new embeddings, "
+                       f"{result.get('skipped', 0)} skipped, {result.get('processed', 0)} total processed")
 
             return {
                 'status': 'success',
-                'output_file': output_file,
-                'embeddings_generated': result.get('count', 0)
+                'output_file': result.get('output_file', output_file),
+                'embeddings_generated': result.get('new_embeddings', 0),
+                'skipped': result.get('skipped', 0),
+                'total_processed': result.get('processed', 0)
             }
 
         finally:

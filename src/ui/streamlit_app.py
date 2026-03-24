@@ -739,7 +739,22 @@ def render_workspace_summary():
         if output_dir.exists():
             for f in sorted(output_dir.glob("*")):
                 if f.is_file():
-                    st.markdown(f"📄 {f.name}")
+                    # Show file with download button
+                    file_col1, file_col2 = st.columns([3, 1])
+                    with file_col1:
+                        st.markdown(f"📄 {f.name}")
+                    with file_col2:
+                        try:
+                            with open(f, "rb") as file_data:
+                                st.download_button(
+                                    label="⬇️",
+                                    data=file_data.read(),
+                                    file_name=f.name,
+                                    key=f"download_{f.name}",
+                                    help=f"Download {f.name}"
+                                )
+                        except Exception:
+                            pass
         else:
             st.caption("No outputs yet")
 
