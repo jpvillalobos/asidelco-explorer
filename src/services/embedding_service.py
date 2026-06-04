@@ -54,7 +54,8 @@ class EmbeddingService:
         return self.dimension
 
     def generate_embeddings(self, input_file: str, text_field: str = None, text_column: str = None, 
-                          model: str = None, output_file: str = None, **kwargs) -> Dict[str, Any]:
+                          model: str = None, output_file: str = None,
+                          force_regenerate: bool = False, **kwargs) -> Dict[str, Any]:
         """
         Generate embeddings from a JSON file and save to output file.
         Supports both text_field and text_column parameter names.
@@ -99,10 +100,11 @@ class EmbeddingService:
         batch_save_interval = 100
         
         logger.info(f"Starting embedding generation for field '{field_name}'")
+        logger.info(f"Force regenerate existing embeddings: {force_regenerate}")
         
         for idx, doc in enumerate(data):
             # Skip if embedding already exists
-            if 'embedding' in doc and doc['embedding']:
+            if not force_regenerate and 'embedding' in doc and doc['embedding']:
                 skipped_count += 1
                 logger.debug(f"Skipping record {idx + 1}/{total_records} - embedding already exists")
                 processed_count += 1
@@ -116,6 +118,7 @@ class EmbeddingService:
                 try:
                     embedding = self.generate_embedding(text)
                     doc['embedding'] = embedding
+                    doc['embedding_model'] = self.model
                     new_embeddings_count += 1
                     processed_count += 1
                     

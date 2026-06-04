@@ -6,6 +6,7 @@ Usage:
 import sys
 import json
 import argparse
+import time
 from pathlib import Path
 import pandas as pd
 
@@ -160,6 +161,232 @@ def cmd_add_id(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fix_enrichment(args: argparse.Namespace) -> int:
+    from services.validation_enrichment_service import ValidationEnrichmentService
+
+    svc = ValidationEnrichmentService()
+    result = svc.validate_and_enrich_streaming(
+        input_file=str(args.input_file),
+        output_file=str(args.output_file),
+        chunk_size=args.chunk_size,
+        progress_interval=args.progress_interval,
+    )
+
+    stats = result["stats"]
+    print(f"Fixed enrichment: {result['output_file']}")
+    print(f"Records: {result['count']}")
+    print(f"Valid: {stats['records_valid']}")
+    print(f"Invalid: {stats['records_invalid']}")
+    print(f"Validation errors: {stats['validation_errors']}")
+    return 0
+
+
+def cmd_repair_summary_embeddings(args: argparse.Namespace) -> int:
+    from services.enhancement_service import EnhancementService
+    from services.embedding_service import EmbeddingService
+    from services.validation_enrichment_service import ValidationEnrichmentService
+
+    enhancement = EnhancementService()
+    embedding_service = None
+    if not args.skip_embeddings:
+        embedding_service = EmbeddingService(model=args.embedding_model)
+
+    reader = ValidationEnrichmentService()
+    validation_service = ValidationEnrichmentService()
+    output_path = Path(args.output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    processed = 0
+    embeddings_generated = 0
+    first_record = True
+    batch = []
+    started_at = time.time()
+    last_reported_processed = None
+
+    def report_progress(force: bool = False):
+        nonlocal last_reported_processed
+        if not force and (not args.progress_interval or processed % args.progress_interval != 0):
+            return
+        if processed == last_reported_processed:
+            return
+
+        elapsed = max(time.time() - started_at, 0.001)
+        rate = processed / elapsed
+        pct = None
+        eta_seconds = None
+        if args.total_records:
+            pct = min((processed / args.total_records) * 100, 100)
+            remaining = max(args.total_records - processed, 0)
+            eta_seconds = remaining / rate if rate > 0 else None
+
+        status = {
+            "processed": processed,
+            "embeddings_generated": embeddings_generated,
+            "elapsed_seconds": round(elapsed, 1),
+            "records_per_second": round(rate, 2),
+            "output_file": str(output_path),
+        }
+        if pct is not None:
+            status["percent"] = round(pct, 2)
+        if eta_seconds is not None:
+            status["eta_seconds"] = round(eta_seconds, 1)
+
+        if args.status_file:
+            Path(args.status_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.status_file).write_text(json.dumps(status, indent=2), encoding="utf-8")
+
+        msg = (
+            f"Processed {processed} records; embeddings regenerated: {embeddings_generated}; "
+            f"{rate:.2f} records/sec"
+        )
+        if pct is not None:
+            msg += f"; {pct:.2f}%"
+        if eta_seconds is not None:
+            msg += f"; ETA {eta_seconds / 60:.1f} min"
+        print(msg, flush=True)
+        last_reported_processed = processed
+
+    def write_record(out, record):
+        nonlocal first_record
+        if not first_record:
+            out.write(",\n")
+        json.dump(record, out, ensure_ascii=False)
+        first_record = False
+
+    def flush_batch(out):
+        nonlocal embeddings_generated
+        if not batch:
+            return
+
+        if args.skip_embeddings:
+            for record in batch:
+                record.pop(args.embedding_field, None)
+                write_record(out, record)
+            batch.clear()
+            return
+
+        summaries = [record[args.text_field] for record in batch]
+        embeddings = embedding_service.generate_embeddings_batch(
+            summaries,
+            batch_size=args.embedding_batch_size
+        )
+        for record, embedding in zip(batch, embeddings):
+            record[args.embedding_field] = embedding
+            record["embedding_model"] = embedding_service.model
+            write_record(out, record)
+        embeddings_generated += len(batch)
+        batch.clear()
+
+    with open(output_path, "w", encoding="utf-8") as out:
+        out.write("[\n")
+        for record in reader._iter_json_array(Path(args.input_file), chunk_size=args.chunk_size):
+            summary = enhancement.build_project_search_summary(record)
+            if not summary:
+                summary = str(record.get(args.text_field, "") or "")
+
+            record[args.text_field] = summary
+            record["summary_model"] = "deterministic-search-summary-v1"
+            record["summary_tokens"] = None
+            record = validation_service._validate_and_enrich_record(record, {}, processed)
+
+            batch.append(record)
+            processed += 1
+
+            if len(batch) >= args.record_batch_size:
+                flush_batch(out)
+
+            report_progress()
+
+        flush_batch(out)
+        report_progress(force=True)
+        out.write("\n]\n")
+
+    print(f"Repaired file: {output_path}")
+    print(f"Records processed: {processed}")
+    if args.skip_embeddings:
+        print("Embeddings skipped and stale embedding fields removed.")
+    else:
+        print(f"Embeddings regenerated: {embeddings_generated}")
+    print(f"Valid records: {validation_service.stats['records_valid']}")
+    print(f"Invalid records: {validation_service.stats['records_invalid']}")
+    print(f"Validation errors: {validation_service.stats['validation_errors']}")
+    return 0
+
+
+def cmd_add_geo_point(args: argparse.Namespace) -> int:
+    from services.enhancement_service import EnhancementService
+    from services.validation_enrichment_service import ValidationEnrichmentService
+
+    enhancement = EnhancementService()
+    reader = ValidationEnrichmentService()
+    output_path = Path(args.output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    processed = 0
+    updated = 0
+    skipped = 0
+    first_record = True
+    started_at = time.time()
+
+    with open(output_path, "w", encoding="utf-8") as out:
+        out.write("[\n")
+        for record in reader._iter_json_array(Path(args.input_file), chunk_size=args.chunk_size):
+            processed += 1
+            if enhancement.apply_location_field(record):
+                updated += 1
+            else:
+                record.pop("location", None)
+                skipped += 1
+
+            if not first_record:
+                out.write(",\n")
+            json.dump(record, out, ensure_ascii=False)
+            first_record = False
+
+            if args.progress_interval and processed % args.progress_interval == 0:
+                elapsed = max(time.time() - started_at, 0.001)
+                rate = processed / elapsed
+                print(
+                    f"Processed {processed}; geo_point updated: {updated}; skipped: {skipped}; "
+                    f"{rate:.2f} records/sec",
+                    flush=True
+                )
+
+        out.write("\n]\n")
+
+    print(f"Geo point output: {output_path}")
+    print(f"Records processed: {processed}")
+    print(f"Geo points updated: {updated}")
+    print(f"Skipped without valid coordinates: {skipped}")
+    return 0
+
+
+def cmd_prepare_for_indexing(args: argparse.Namespace) -> int:
+    from services.search_preparation_service import SearchPreparationService
+
+    svc = SearchPreparationService()
+    result = svc.prepare_for_indexing(
+        input_file=str(args.input_file),
+        output_file=str(args.output_file),
+        embedding_field=args.embedding_field,
+        expected_embedding_dim=args.expected_embedding_dim,
+        summary_field=args.summary_field,
+        chunk_size=args.chunk_size,
+        progress_interval=args.progress_interval,
+    )
+
+    stats = result["stats"]
+    print(f"Search-ready file: {result['output_file']}")
+    print(f"Records processed: {result['count']}")
+    print(f"Ready: {stats['ready']}")
+    print(f"Not ready: {stats['not_ready']}")
+    print(f"Locations: {stats['location_added']}")
+    print(f"Missing locations: {stats['missing_location']}")
+    print(f"Missing embeddings: {stats['missing_embedding']}")
+    print(f"Bad embedding dimensions: {stats['bad_embedding_dimension']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="etl", description="ASIDELCO Explorer CSV ETL")
     sp = ap.add_subparsers(dest="command", required=True)
@@ -221,6 +448,61 @@ def build_parser() -> argparse.ArgumentParser:
     p_emb.add_argument("--provider", choices=["openai"], default="openai")
     p_emb.add_argument("--embedding-column", default="embedding")
     p_emb.set_defaults(func=cmd_add_embeddings)
+
+    p_fix = sp.add_parser(
+        "fix-enrichment",
+        help="Rebuild validation/enrichment metadata for a large JSON array"
+    )
+    p_fix.add_argument("input_file", type=Path)
+    p_fix.add_argument("output_file", type=Path)
+    p_fix.add_argument("--chunk-size", type=int, default=1024 * 1024)
+    p_fix.add_argument("--progress-interval", type=int, default=10000)
+    p_fix.set_defaults(func=cmd_fix_enrichment)
+
+    p_repair = sp.add_parser(
+        "repair-summary-embeddings",
+        help="Rebuild resumen and regenerate embeddings for a large JSON array"
+    )
+    p_repair.add_argument("input_file", type=Path)
+    p_repair.add_argument("output_file", type=Path)
+    p_repair.add_argument("--text-field", default="resumen")
+    p_repair.add_argument("--embedding-field", default="embedding")
+    p_repair.add_argument("--embedding-model", default="text-embedding-3-small")
+    p_repair.add_argument("--chunk-size", type=int, default=1024 * 1024)
+    p_repair.add_argument("--record-batch-size", type=int, default=64)
+    p_repair.add_argument("--embedding-batch-size", type=int, default=64)
+    p_repair.add_argument("--progress-interval", type=int, default=5000)
+    p_repair.add_argument("--total-records", type=int, default=None)
+    p_repair.add_argument("--status-file", type=Path, default=None)
+    p_repair.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="Only rebuild summaries and remove stale embedding fields"
+    )
+    p_repair.set_defaults(func=cmd_repair_summary_embeddings)
+
+    p_geo = sp.add_parser(
+        "add-geo-point",
+        help="Add OpenSearch geo_point location from latitude/longitude to a JSON array"
+    )
+    p_geo.add_argument("input_file", type=Path)
+    p_geo.add_argument("output_file", type=Path)
+    p_geo.add_argument("--chunk-size", type=int, default=1024 * 1024)
+    p_geo.add_argument("--progress-interval", type=int, default=10000)
+    p_geo.set_defaults(func=cmd_add_geo_point)
+
+    p_prepare = sp.add_parser(
+        "prepare-for-indexing",
+        help="Build the canonical search_ready.json file for OpenSearch/Neo4j loading"
+    )
+    p_prepare.add_argument("input_file", type=Path)
+    p_prepare.add_argument("output_file", type=Path)
+    p_prepare.add_argument("--summary-field", default="resumen")
+    p_prepare.add_argument("--embedding-field", default="embedding")
+    p_prepare.add_argument("--expected-embedding-dim", type=int, default=1536)
+    p_prepare.add_argument("--chunk-size", type=int, default=1024 * 1024)
+    p_prepare.add_argument("--progress-interval", type=int, default=10000)
+    p_prepare.set_defaults(func=cmd_prepare_for_indexing)
 
     return ap
 

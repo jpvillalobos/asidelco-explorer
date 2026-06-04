@@ -1,7 +1,7 @@
 """
 Validation and Enrichment Service
 """
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 from pathlib import Path
 import logging
 import json
@@ -17,6 +17,35 @@ class ValidationEnrichmentService:
     
     def __init__(self):
         """Initialize validation service"""
+        self._reset_stats()
+        self._setup_valid_values()
+        
+        # Flattened field names are produced by TransformService._sanitize_field_name.
+        # These aliases let validation/enrichment work after flatten_normalize.
+        self.PROJECT_FIELD_ALIASES = {
+            "project_id": "project_id",
+            "fecha_proyecto": "Fecha Proyecto",
+            "estado": "Estado",
+            "tasado": "Tasado",
+            "provincia": "Provincia",
+            "canton": "Cantón",
+            "distrito": "Distrito",
+            "carnet_profesional": "Carnet Profesional",
+            "responsable": "Responsable",
+        }
+        self.PROFESSIONAL_FIELD_ALIASES = {
+            "cedula": "Cedula",
+            "carne": "Carne",
+            "carnet": "Carne",
+            "nombrecompleto": "NombreCompleto",
+            "colegio": "Colegio",
+            "correopermanente": "CorreoPermanente",
+            "correolaboral": "CorreoLaboral",
+            "lugar": "Lugar",
+        }
+    
+    def _reset_stats(self):
+        """Reset validation run statistics"""
         self.stats = {
             "records_processed": 0,
             "records_valid": 0,
@@ -24,7 +53,9 @@ class ValidationEnrichmentService:
             "validation_errors": 0,
             "enrichments_added": 0
         }
-        
+    
+    def _setup_valid_values(self):
+        """Setup static valid value collections"""
         # Valid values for categorical fields
         self.VALID_ESTADOS = {
             "Permiso de Construcción",
@@ -93,6 +124,7 @@ class ValidationEnrichmentService:
         logger.info(f"  Input: {input_file}")
         logger.info(f"  Output: {output_file}")
         logger.info("="*80)
+        self._reset_stats()
         
         # Load merged data
         if context:
@@ -114,8 +146,6 @@ class ValidationEnrichmentService:
         total_records = len(records)
         
         for idx, record in enumerate(records):
-            self.stats["records_processed"] += 1
-            
             # Progress reporting
             if context and idx % 100 == 0:
                 progress = 10 + int((idx / total_records) * 80)
@@ -173,11 +203,148 @@ class ValidationEnrichmentService:
             "stats": self.stats.copy()
         }
     
+    def validate_and_enrich_streaming(
+        self,
+        input_file: str,
+        output_file: str,
+        validation_rules: Optional[Dict[str, Any]] = None,
+        chunk_size: int = 1024 * 1024,
+        progress_interval: int = 10000
+    ) -> Dict[str, Any]:
+        """
+        Validate and enrich a JSON array without loading the whole file in memory.
+
+        This is intended for large flattened pipeline outputs. The input must be a
+        top-level JSON array of objects, and the output is written incrementally as
+        another JSON array.
+        """
+        logger.info("="*80)
+        logger.info("Starting streaming validation and enrichment")
+        logger.info(f"  Input: {input_file}")
+        logger.info(f"  Output: {output_file}")
+        logger.info(f"  Chunk size: {chunk_size}")
+        logger.info("="*80)
+        self._reset_stats()
+
+        input_path = Path(input_file)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_file}")
+
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        count = 0
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("[\n")
+            for idx, record in enumerate(self._iter_json_array(input_path, chunk_size=chunk_size)):
+                self.stats["records_processed"] += 1
+                validated_record = self._validate_and_enrich_record(
+                    record,
+                    validation_rules or {},
+                    idx,
+                    count_processed=False
+                )
+
+                if idx:
+                    f.write(",\n")
+                json.dump(validated_record, f, ensure_ascii=False)
+                count += 1
+
+                if progress_interval and count % progress_interval == 0:
+                    logger.info(
+                        "Processed %s records (%s valid, %s invalid)",
+                        count,
+                        self.stats["records_valid"],
+                        self.stats["records_invalid"]
+                    )
+            f.write("\n]\n")
+
+        logger.info("="*80)
+        logger.info("Streaming validation and enrichment completed")
+        logger.info(f"  Records processed: {self.stats['records_processed']}")
+        logger.info(f"  Valid records: {self.stats['records_valid']}")
+        logger.info(f"  Invalid records: {self.stats['records_invalid']}")
+        logger.info(f"  Validation errors: {self.stats['validation_errors']}")
+        logger.info(f"  Enrichments added: {self.stats['enrichments_added']}")
+        logger.info(f"  Output file: {output_path}")
+        logger.info("="*80)
+
+        return {
+            "count": count,
+            "output_file": str(output_path),
+            "stats": self.stats.copy()
+        }
+    
+    def _iter_json_array(self, input_path: Path, chunk_size: int = 1024 * 1024):
+        """Yield objects from a top-level JSON array using an incremental decoder."""
+        decoder = json.JSONDecoder()
+        buffer = ""
+        pos = 0
+        eof = False
+
+        def fill_buffer() -> bool:
+            nonlocal buffer, eof
+            chunk = f.read(chunk_size)
+            if chunk:
+                buffer += chunk
+                return True
+            eof = True
+            return False
+
+        def compact_buffer():
+            nonlocal buffer, pos
+            if pos > 0:
+                buffer = buffer[pos:]
+                pos = 0
+
+        def skip_whitespace():
+            nonlocal pos
+            while True:
+                while pos < len(buffer) and buffer[pos].isspace():
+                    pos += 1
+                if pos < len(buffer) or eof:
+                    return
+                compact_buffer()
+                fill_buffer()
+
+        with open(input_path, 'r', encoding='utf-8') as f:
+            fill_buffer()
+            skip_whitespace()
+
+            if pos >= len(buffer) or buffer[pos] != "[":
+                raise ValueError(f"Expected top-level JSON array in {input_path}")
+            pos += 1
+
+            while True:
+                skip_whitespace()
+
+                if pos < len(buffer) and buffer[pos] == "]":
+                    return
+
+                if pos < len(buffer) and buffer[pos] == ",":
+                    pos += 1
+                    continue
+
+                while True:
+                    try:
+                        record, end = decoder.raw_decode(buffer, pos)
+                        pos = end
+                        yield record
+                        if pos > chunk_size:
+                            compact_buffer()
+                        break
+                    except json.JSONDecodeError:
+                        if eof:
+                            raise
+                        compact_buffer()
+                        fill_buffer()
+    
     def _validate_and_enrich_record(
         self,
         record: Dict[str, Any],
         validation_rules: Dict[str, Any],
-        record_index: int
+        record_index: int,
+        count_processed: bool = True
     ) -> Dict[str, Any]:
         """
         Validate and enrich a single record
@@ -193,18 +360,16 @@ class ValidationEnrichmentService:
         # Create enriched record structure
         enriched = record.copy()
         
-        # Initialize validation metadata
-        if "validation" not in enriched:
-            enriched["validation"] = {
-                "is_valid": True,
-                "errors": [],
-                "warnings": [],
-                "validated_at": datetime.now().isoformat()
-            }
+        # Rebuild derived metadata on every run so existing bad validation output
+        # can be repaired by reprocessing the same records.
+        enriched["validation"] = {
+            "is_valid": True,
+            "errors": [],
+            "warnings": [],
+            "validated_at": datetime.now().isoformat()
+        }
         
-        # Initialize enrichment container
-        if "enrichment" not in enriched:
-            enriched["enrichment"] = {}
+        enriched["enrichment"] = {}
         
         # Run validations
         self._validate_record(enriched, validation_rules, record_index)
@@ -213,6 +378,9 @@ class ValidationEnrichmentService:
         self._enrich_record(enriched, record_index)
         
         # Update stats
+        if count_processed:
+            self.stats["records_processed"] += 1
+        
         if enriched["validation"]["is_valid"]:
             self.stats["records_valid"] += 1
         else:
@@ -221,6 +389,45 @@ class ValidationEnrichmentService:
         self.stats["validation_errors"] += len(enriched["validation"]["errors"])
         
         return enriched
+    
+    def _get_record_sections(self, record: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        """
+        Return csv/project/professional sections for nested or flattened records.
+
+        The merge stage creates nested sections. The flatten_normalize stage turns
+        them into prefixed fields, which is what downstream enhancement stages use.
+        """
+        csv_data = record.get("csv_data") or self._extract_flat_section(record, "csv_", {})
+        project_data = record.get("project_data") or self._extract_flat_section(
+            record,
+            "project_",
+            self.PROJECT_FIELD_ALIASES
+        )
+        professional_data = record.get("professional_data") or self._extract_flat_section(
+            record,
+            "professional_",
+            self.PROFESSIONAL_FIELD_ALIASES
+        )
+
+        return csv_data, project_data, professional_data
+    
+    def _extract_flat_section(
+        self,
+        record: Dict[str, Any],
+        prefix: str,
+        aliases: Dict[str, str]
+    ) -> Dict[str, Any]:
+        """Extract a section from flattened prefixed fields."""
+        section = {}
+        for key, value in record.items():
+            if not key.startswith(prefix):
+                continue
+
+            raw_key = key[len(prefix):]
+            section_key = aliases.get(raw_key, raw_key)
+            section[section_key] = value
+
+        return section
     
     def _validate_record(
         self,
@@ -232,9 +439,7 @@ class ValidationEnrichmentService:
         Run validation checks on record (modifies in place)
         """
         validation = record["validation"]
-        csv_data = record.get("csv_data", {})
-        project_data = record.get("project_data", {})
-        professional_data = record.get("professional_data", {})
+        csv_data, project_data, professional_data = self._get_record_sections(record)
         
         # 1. Required fields validation
         if not csv_data.get("proyecto"):
@@ -328,9 +533,7 @@ class ValidationEnrichmentService:
         Add enrichments to record (modifies in place)
         """
         enrichment = record["enrichment"]
-        csv_data = record.get("csv_data", {})
-        project_data = record.get("project_data", {})
-        professional_data = record.get("professional_data", {})
+        csv_data, project_data, professional_data = self._get_record_sections(record)
         
         # 1. Normalized location
         provincia = csv_data.get("provincia") or project_data.get("Provincia", "")

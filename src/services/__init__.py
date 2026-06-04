@@ -11,6 +11,7 @@ __all__ = [
     "neo4j_service",
     "opensearch_service",
     "parser_service",
+    "search_preparation_service",
     "storage_service",
     "transform_service",
 ]
@@ -61,6 +62,12 @@ try:
     __all__.append('ParserService')
 except Exception as e:
     logger.warning(f"Could not import ParserService: {e}")
+
+try:
+    from .search_preparation_service import SearchPreparationService
+    __all__.append('SearchPreparationService')
+except Exception as e:
+    logger.warning(f"Could not import SearchPreparationService: {e}")
 
 try:
     from .storage_service import StorageService

@@ -95,7 +95,7 @@ pipeline:
             rate_limit: 1.0
 
         - name: generate_summaries
-          title: Generate AI Project Summaries
+          title: Generate Project Search Summaries
           log_level: INFO
           args:
             input_file: data/output/geocoded.json
@@ -104,7 +104,8 @@ pipeline:
             model: gpt-4o-mini
             max_completion_tokens: 300
             temperature: 0.3
-            skip_existing: true
+            skip_existing: false
+            use_ai: false
 
         - name: validate_enrich
           title: Validate and Final Enrichment
@@ -126,6 +127,19 @@ pipeline:
             model: text-embedding-3-small
             api_key: null
             batch_size: 32
+            force_regenerate: true
+
+        - name: prepare_for_indexing
+          title: Prepare Search Index Documents
+          log_level: INFO
+          args:
+            input_file: data/output/enriched_with_embeddings.json
+            output_file: data/output/search_ready.json
+            summary_field: resumen
+            embedding_field: embedding
+            expected_embedding_dim: 1536
+            chunk_size: 16777216
+            progress_interval: 10000
 
     - id: load
       title: Load
@@ -144,7 +158,7 @@ pipeline:
           title: Load to OpenSearch
           log_level: INFO
           args:
-            input_file: data/output/enriched_with_embeddings.json
+            input_file: data/output/search_ready.json
             host: localhost
             port: 9200
             index_name: asidelco-explorer
@@ -159,6 +173,6 @@ pipeline:
           title: Load to Neo4j
           log_level: INFO
           args:
-            input_file: data/output/enriched_with_embeddings.json
+            input_file: data/output/search_ready.json
             uri: bolt://localhost:7687
             auth: null

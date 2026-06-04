@@ -24,6 +24,151 @@ class EnhancementService:
         
         # Initialize OpenAI client (will be set when needed)
         self._openai_client = None
+
+    def _first_value(self, record: Dict[str, Any], *keys: str) -> str:
+        """Return the first meaningful value from flat or nested record keys."""
+        for key in keys:
+            value = record.get(key)
+            if value not in (None, "", "NO REGISTRADO"):
+                return str(value).strip()
+
+        sections = {
+            "csv": record.get("csv_data", {}) or {},
+            "project": record.get("project_data", {}) or {},
+            "professional": record.get("professional_data", {}) or {},
+        }
+        for key in keys:
+            if "_" not in key:
+                continue
+            section_name, section_key = key.split("_", 1)
+            section = sections.get(section_name, {})
+            value = section.get(section_key)
+            if value not in (None, "", "NO REGISTRADO"):
+                return str(value).strip()
+
+        return ""
+
+    def build_project_search_summary(self, record: Dict[str, Any]) -> str:
+        """
+        Build deterministic project text for embeddings and search.
+
+        This intentionally favors exact names, IDs, classifications, and location
+        fields over prose so vector search has the important tokens available.
+        """
+        record_id = self._first_value(record, "record_id", "csv_id")
+        project_id = self._first_value(record, "project_num_proyecto", "project_project_id", "csv_proyecto")
+        description = self._first_value(
+            record,
+            "project_descripcion_del_proyecto",
+            "project_descripcion",
+            "csv_subobra"
+        )
+        classification = self._first_value(record, "project_clasificacion", "csv_clasificacion")
+        obra = self._first_value(record, "csv_obra")
+        subobra = self._first_value(record, "csv_subobra", "project_descripcion")
+        province = self._first_value(record, "project_provincia", "csv_provincia")
+        canton = self._first_value(record, "project_canton", "csv_canton")
+        district = self._first_value(record, "project_distrito", "csv_distrito")
+        address = self._first_value(record, "project_direccion_exacta")
+        area = self._first_value(record, "csv_area", "project_area_de_construccion")
+        unit = self._first_value(record, "csv_unidad")
+        tasado = self._first_value(record, "project_tasado")
+        estado = self._first_value(record, "project_estado")
+        owner = self._first_value(record, "project_nombre_propietario")
+        project_responsible = self._first_value(record, "project_responsable")
+        professional_name = self._first_value(record, "professional_nombrecompleto")
+        professional_id = self._first_value(record, "professional_cedula")
+        professional_license = self._first_value(
+            record,
+            "professional_carne",
+            "professional_carnet",
+            "project_carnet_profesional"
+        )
+        professional_college = self._first_value(record, "professional_colegio")
+        professional_email = self._first_value(record, "professional_correopermanente", "professional_correolaboral")
+
+        parts = []
+        if record_id or project_id:
+            ids = ", ".join(value for value in [record_id, project_id] if value)
+            parts.append(f"Proyecto {ids}.")
+        if description:
+            parts.append(f"Descripcion del proyecto: {description}.")
+        classifications = ", ".join(value for value in [classification, obra, subobra] if value)
+        if classifications:
+            parts.append(f"Clasificacion: {classifications}.")
+        location = ", ".join(value for value in [district, canton, province] if value)
+        if location:
+            parts.append(f"Ubicacion: {location}.")
+        if address:
+            parts.append(f"Direccion exacta: {address}.")
+        if area:
+            area_text = f"{area} {unit}".strip()
+            parts.append(f"Area: {area_text}.")
+        if tasado:
+            parts.append(f"Monto tasado: {tasado}.")
+        if estado:
+            parts.append(f"Estado del tramite: {estado}.")
+        if owner:
+            parts.append(f"Propietario: {owner}.")
+        if project_responsible:
+            parts.append(f"Responsable del proyecto o empresa: {project_responsible}.")
+        if professional_name:
+            parts.append(f"Profesional responsable: {professional_name}.")
+        if professional_id:
+            parts.append(f"Cedula profesional: {professional_id}.")
+        if professional_license:
+            parts.append(f"Carne profesional: {professional_license}.")
+        if professional_college:
+            parts.append(f"Colegio profesional: {professional_college}.")
+        if professional_email:
+            parts.append(f"Correo profesional: {professional_email}.")
+
+        return " ".join(parts)
+
+    def _summary_has_placeholders(self, summary: str) -> bool:
+        """Detect summaries that contain unresolved LLM/template placeholders."""
+        if not summary:
+            return False
+
+        placeholder_markers = [
+            "[nombre del profesional]",
+            "[numero de identificacion",
+            "[número de identificación",
+            "[número",
+            "[numero",
+            "[",
+            "]",
+        ]
+        normalized = summary.lower()
+        return any(marker in normalized for marker in placeholder_markers)
+
+    def apply_location_field(self, record: Dict[str, Any]) -> bool:
+        """
+        Add OpenSearch-compatible geo_point field from latitude/longitude.
+
+        OpenSearch Dashboards Maps can use this object directly when mapped as
+        geo_point:
+          {"lat": 10.0, "lon": -84.0}
+        """
+        latitude = record.get("latitude")
+        longitude = record.get("longitude")
+        if latitude in (None, "") or longitude in (None, ""):
+            return False
+
+        try:
+            lat = float(latitude)
+            lon = float(longitude)
+        except (TypeError, ValueError):
+            return False
+
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return False
+
+        record["location"] = {
+            "lat": lat,
+            "lon": lon
+        }
+        return True
     
     def _get_openai_client(self) -> Optional[OpenAI]:
         """Lazy load OpenAI client"""
@@ -305,6 +450,7 @@ class EnhancementService:
                 if geocode_result:
                     record['latitude'] = geocode_result['latitude']
                     record['longitude'] = geocode_result['longitude']
+                    self.apply_location_field(record)
                     record['geocoded_address'] = geocode_result.get('geocoded_address', cache_key)
                     record['geocoding_level'] = geocode_result.get('geocoding_level', 0)
                     record['geocoding_description'] = geocode_result.get('geocoding_description', 'Unknown')
@@ -392,6 +538,7 @@ class EnhancementService:
         max_completion_tokens: int = 300,
         temperature: float = 0.3,
         skip_existing: bool = True,
+        use_ai: bool = False,
         context: Optional[object] = None
     ) -> Dict[str, Any]:
         """
@@ -406,6 +553,7 @@ class EnhancementService:
             max_completion_tokens: Maximum tokens for summary
             temperature: Model temperature (0-1, lower = more focused)
             skip_existing: Skip records that already have summaries
+            use_ai: Whether to use OpenAI chat completions. False uses deterministic summaries.
             context: Optional context for progress reporting
             
         Returns:
@@ -416,17 +564,19 @@ class EnhancementService:
         logger.info(f"  Output: {output_file}")
         logger.info(f"  Model: {model}")
         logger.info(f"  Summary field: {summary_field}")
+        logger.info(f"  Use AI: {use_ai}")
         
-        # Get OpenAI client
-        client = self._get_openai_client()
-        if not client:
-            logger.error("OpenAI client not available - check OPENAI_API_KEY")
-            return {
-                'status': 'error',
-                'message': 'OpenAI API key not configured',
-                'count': 0,
-                'stats': {}
-            }
+        client = None
+        if use_ai:
+            client = self._get_openai_client()
+            if not client:
+                logger.error("OpenAI client not available - check OPENAI_API_KEY")
+                return {
+                    'status': 'error',
+                    'message': 'OpenAI API key not configured',
+                    'count': 0,
+                    'stats': {}
+                }
         
         # Default source fields if not provided
         if source_fields is None:
@@ -437,11 +587,19 @@ class EnhancementService:
                 'project_provincia',
                 'project_canton',
                 'project_distrito',
+                'csv_area',
+                'csv_unidad',
                 'project_area_de_construccion',
                 'project_uso',
+                'project_responsable',
                 'professional_nombre',
                 'professional_apellido1',
-                'professional_apellido2'
+                'professional_apellido2',
+                'professional_nombrecompleto',
+                'professional_cedula',
+                'professional_carne',
+                'professional_carnet',
+                'professional_colegio'
             ]
         
         # Load input data
@@ -482,9 +640,25 @@ El resumen deber estar orientado a facilitar el procesamiento de embeddings para
         for i, record in enumerate(records):
             try:
                 # Skip if summary already exists and skip_existing is True
-                if skip_existing and summary_field in record and record[summary_field]:
+                existing_summary = record.get(summary_field, "")
+                if skip_existing and existing_summary and not self._summary_has_placeholders(str(existing_summary)):
                     logger.debug(f"Record {i}: Skipping - summary already exists")
                     stats['skipped'] += 1
+                    enhanced_records.append(record)
+                    continue
+
+                if not use_ai:
+                    summary = self.build_project_search_summary(record)
+                    if not summary:
+                        logger.debug(f"Record {i}: No fields available for deterministic summary")
+                        stats['skipped'] += 1
+                        enhanced_records.append(record)
+                        continue
+
+                    record[summary_field] = summary
+                    record['summary_model'] = 'deterministic-search-summary-v1'
+                    record['summary_tokens'] = None
+                    stats['summarized'] += 1
                     enhanced_records.append(record)
                     continue
                 
@@ -519,6 +693,9 @@ El resumen deber estar orientado a facilitar el procesamiento de embeddings para
                 )
                 
                 summary = response.choices[0].message.content.strip()
+                if self._summary_has_placeholders(summary):
+                    logger.warning(f"Record {i}: AI summary contained placeholders; using deterministic fallback")
+                    summary = self.build_project_search_summary(record)
                 
                 # Add summary to record
                 record[summary_field] = summary

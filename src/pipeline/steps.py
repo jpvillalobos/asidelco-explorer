@@ -23,6 +23,7 @@ class StepType(str, Enum):
     
     # Embedding steps
     GENERATE_EMBEDDINGS = "generate_embeddings"
+    PREPARE_FOR_INDEXING = "prepare_for_indexing"
     
     # Load steps
     LOAD_NEO4J = "load_neo4j"

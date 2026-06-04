@@ -73,6 +73,9 @@ class StepRegistry:
             elif service_name == 'embedding':
                 from services.embedding_service import EmbeddingService
                 self._services['embedding'] = EmbeddingService()
+            elif service_name == 'search_preparation':
+                from services.search_preparation_service import SearchPreparationService
+                self._services['search_preparation'] = SearchPreparationService()
             elif service_name == 'opensearch':
                 from services.opensearch_service import OpenSearchService
                 self._services['opensearch'] = OpenSearchService()
@@ -114,6 +117,7 @@ class StepRegistry:
         self.register('add_geocoding', self._add_geocoding)
         self.register('generate_summaries', self._generate_summaries)
         self.register('generate_embeddings', self._generate_embeddings)
+        self.register('prepare_for_indexing', self._prepare_for_indexing)
         
         # Load Stage
         self.register('load_excel_template', self._load_excel_template)  # ADD THIS
@@ -353,14 +357,17 @@ class StepRegistry:
                 raise ValueError("Either 'text_field' or 'text_column' must be provided")
             model = kwargs.get('model', 'openai')
             output_file = kwargs['output_file']
+            force_regenerate = kwargs.get('force_regenerate', False)
 
             logger.info(f"Starting embedding generation: model={model}, field={text_field}")
+            logger.info(f"  Force regenerate: {force_regenerate}")
 
             result = embedding_service.generate_embeddings(
                 input_file=input_file,
                 text_field=text_field,
                 model=model,
-                output_file=output_file
+                output_file=output_file,
+                force_regenerate=force_regenerate
             )
 
             # Updated to use new return values
@@ -418,6 +425,58 @@ class StepRegistry:
                 'stats': result.get('stats', {})
             }
         
+        finally:
+            if file_handler:
+                logger.removeHandler(file_handler)
+                file_handler.close()
+
+    def _prepare_for_indexing(self, **kwargs) -> Dict[str, Any]:
+        """Prepare enhanced records for OpenSearch indexing."""
+        file_handler = self._setup_step_logging('search_preparation', 'prepare_for_indexing')
+        logger = logging.getLogger('services.search_preparation_service')
+
+        if file_handler:
+            logger.addHandler(file_handler)
+
+        try:
+            search_preparation_service = self._get_service('search_preparation')
+
+            input_file = kwargs['input_file']
+            output_file = kwargs['output_file']
+            embedding_field = kwargs.get('embedding_field', 'embedding')
+            expected_embedding_dim = kwargs.get('expected_embedding_dim', 1536)
+            summary_field = kwargs.get('summary_field', 'resumen')
+            chunk_size = kwargs.get('chunk_size', 1024 * 1024)
+            progress_interval = kwargs.get('progress_interval', 10000)
+
+            logger.info("Starting search index preparation")
+            logger.info(f"  Input: {input_file}")
+            logger.info(f"  Output: {output_file}")
+
+            result = search_preparation_service.prepare_for_indexing(
+                input_file=input_file,
+                output_file=output_file,
+                embedding_field=embedding_field,
+                expected_embedding_dim=expected_embedding_dim,
+                summary_field=summary_field,
+                chunk_size=chunk_size,
+                progress_interval=progress_interval,
+                context=None,
+            )
+
+            logger.info(
+                "Search index preparation completed: %s ready, %s not ready",
+                result.get('stats', {}).get('ready', 0),
+                result.get('stats', {}).get('not_ready', 0),
+            )
+
+            return {
+                'status': 'success',
+                'output_file': result.get('output_file', output_file),
+                'records_processed': result.get('count', 0),
+                'stats': result.get('stats', {}),
+            }
+
         finally:
             if file_handler:
                 logger.removeHandler(file_handler)
@@ -705,11 +764,13 @@ class StepRegistry:
             max_completion_tokens = kwargs.get('max_completion_tokens', 300)
             temperature = kwargs.get('temperature', 0.3)
             skip_existing = kwargs.get('skip_existing', True)
+            use_ai = kwargs.get('use_ai', False)
             
-            logger.info(f"Starting AI summarization")
+            logger.info(f"Starting project summarization")
             logger.info(f"  Input: {input_file}")
             logger.info(f"  Output: {output_file}")
             logger.info(f"  Model: {model}")
+            logger.info(f"  Use AI: {use_ai}")
             
             result = enhancement_service.generate_summaries(
                 input_file=input_file,
@@ -720,6 +781,7 @@ class StepRegistry:
                 max_completion_tokens=max_completion_tokens,
                 temperature=temperature,
                 skip_existing=skip_existing,
+                use_ai=use_ai,
                 context=None
             )
             
