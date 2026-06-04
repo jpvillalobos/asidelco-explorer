@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 
 class EnhancementService:
     """Service for data enhancement: geocoding and AI summarization"""
+
+    CR_PROVINCE_CENTROIDS = {
+        "SAN JOSE": {"latitude": 9.9281, "longitude": -84.0907},
+        "ALAJUELA": {"latitude": 10.0162, "longitude": -84.2116},
+        "CARTAGO": {"latitude": 9.8644, "longitude": -83.9194},
+        "HEREDIA": {"latitude": 10.0024, "longitude": -84.1165},
+        "GUANACASTE": {"latitude": 10.6267, "longitude": -85.4437},
+        "PUNTARENAS": {"latitude": 9.9763, "longitude": -84.8384},
+        "LIMON": {"latitude": 9.9896, "longitude": -83.0350},
+    }
     
     def __init__(self):
         self.geocoder = Nominatim(user_agent="asidelco-explorer")
@@ -142,6 +152,45 @@ class EnhancementService:
         normalized = summary.lower()
         return any(marker in normalized for marker in placeholder_markers)
 
+    def _normalize_geo_text(self, value: Any) -> str:
+        if value in (None, "", "NO REGISTRADO"):
+            return ""
+        return str(value).strip()
+
+    def _record_geo_value(self, record: Dict[str, Any], field: str) -> Optional[str]:
+        value = self._normalize_geo_text(record.get(field))
+        if value:
+            return value
+
+        fallback_pairs = {
+            "project_provincia": "csv_provincia",
+            "project_canton": "csv_canton",
+            "project_distrito": "csv_distrito",
+        }
+        fallback_field = fallback_pairs.get(field)
+        if fallback_field:
+            value = self._normalize_geo_text(record.get(fallback_field))
+            if value:
+                return value
+
+        return None
+
+    def _province_centroid(self, province: Optional[str]) -> Optional[Dict[str, Any]]:
+        province_key = self._normalize_geo_text(province).upper()
+        centroid = self.CR_PROVINCE_CENTROIDS.get(province_key)
+        if not centroid:
+            return None
+
+        return {
+            "latitude": centroid["latitude"],
+            "longitude": centroid["longitude"],
+            "geocoding_level": 5,
+            "geocoding_description": "Province centroid",
+            "geocoding_precision": "province",
+            "geocoded_address": f"{province_key}, Costa Rica",
+            "geocoding_source": "local_admin_centroid",
+        }
+
     def apply_location_field(self, record: Dict[str, Any]) -> bool:
         """
         Add OpenSearch-compatible geo_point field from latitude/longitude.
@@ -186,7 +235,17 @@ class EnhancementService:
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     self.geocode_cache = json.load(f)
-                logger.info(f"Loaded {len(self.geocode_cache)} cached geocode entries")
+                negative_entries = [
+                    key for key, value in self.geocode_cache.items()
+                    if not value
+                ]
+                for key in negative_entries:
+                    self.geocode_cache.pop(key, None)
+                logger.info(
+                    "Loaded %s cached geocode entries (%s stale negative entries ignored)",
+                    len(self.geocode_cache),
+                    len(negative_entries),
+                )
             except Exception as e:
                 logger.warning(f"Failed to load geocode cache: {e}")
                 self.geocode_cache = {}
@@ -194,13 +253,22 @@ class EnhancementService:
     def _save_geocode_cache(self, cache_path: Path):
         """Save geocode cache to file"""
         try:
+            self.geocode_cache = {
+                key: value for key, value in self.geocode_cache.items()
+                if value
+            }
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(self.geocode_cache, f, ensure_ascii=False, indent=2)
             logger.info(f"Saved {len(self.geocode_cache)} geocode entries to cache")
         except Exception as e:
             logger.warning(f"Failed to save geocode cache: {e}")
     
-    def _geocode_address(self, address: str, max_retries: int = 3) -> Optional[Dict[str, float]]:
+    def _geocode_address(
+        self,
+        address: str,
+        max_retries: int = 3,
+        allow_external: bool = True,
+    ) -> Optional[Dict[str, float]]:
         """
         Geocode an address to lat/lon coordinates.
 
@@ -213,7 +281,15 @@ class EnhancementService:
         """
         # Check cache first
         if address in self.geocode_cache:
-            return self.geocode_cache[address]
+            cached = self.geocode_cache[address]
+            if cached:
+                result = dict(cached)
+                result['from_cache'] = True
+                return result
+            self.geocode_cache.pop(address, None)
+
+        if not allow_external:
+            return None
 
         # Try geocoding with retries
         for attempt in range(max_retries):
@@ -231,7 +307,6 @@ class EnhancementService:
                     return result
                 else:
                     logger.debug(f"No geocode result for: {address}")
-                    self.geocode_cache[address] = None
                     return None
 
             except GeocoderTimedOut:
@@ -240,17 +315,14 @@ class EnhancementService:
                     time.sleep(1)  # Wait before retry
                     continue
                 else:
-                    self.geocode_cache[address] = None
                     return None
 
             except GeocoderServiceError as e:
                 logger.error(f"Geocoding service error for {address}: {e}")
-                self.geocode_cache[address] = None
                 return None
 
             except Exception as e:
                 logger.error(f"Unexpected geocoding error for {address}: {e}")
-                self.geocode_cache[address] = None
                 return None
 
         return None
@@ -262,7 +334,8 @@ class EnhancementService:
         canton: Optional[str],
         province: Optional[str],
         country: str,
-        max_retries: int = 3
+        max_retries: int = 3,
+        allow_external: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """
         Geocode an address with multi-level fallback strategy.
@@ -331,16 +404,32 @@ class EnhancementService:
 
             logger.debug(f"Trying geocoding level {level} ({description}): {address}")
 
-            result = self._geocode_address(address, max_retries=max_retries)
+            result = self._geocode_address(
+                address,
+                max_retries=max_retries,
+                allow_external=allow_external,
+            )
 
             if result:
                 result['geocoding_level'] = level
                 result['geocoding_description'] = description
+                result['geocoding_precision'] = {
+                    1: 'exact_address',
+                    2: 'district',
+                    3: 'canton',
+                    4: 'province',
+                }.get(level, 'unknown')
                 result['geocoded_address'] = address
+                result.setdefault('geocoding_source', 'nominatim')
                 logger.debug(f"Geocoding succeeded at level {level} ({description})")
                 return result
             else:
                 logger.debug(f"Geocoding failed at level {level} ({description})")
+
+        centroid = self._province_centroid(province)
+        if centroid:
+            logger.debug(f"Using local province centroid fallback for: {province}")
+            return centroid
 
         # All levels failed
         logger.debug(f"All geocoding levels failed for: street={street}, district={district}, canton={canton}, province={province}")
@@ -409,7 +498,8 @@ class EnhancementService:
             'level_1': 0,  # Full address
             'level_2': 0,  # District level
             'level_3': 0,  # Canton level
-            'level_4': 0   # Province level
+            'level_4': 0,  # Province level
+            'level_5': 0   # Local province centroid
         }
         
         enhanced_records = []
@@ -417,10 +507,10 @@ class EnhancementService:
         for i, record in enumerate(records):
             try:
                 # Extract address components
-                street = str(record[address_field]) if address_field in record and record[address_field] else None
-                district = str(record[district_field]) if district_field in record and record[district_field] else None
-                canton = str(record[canton_field]) if canton_field in record and record[canton_field] else None
-                province = str(record[province_field]) if province_field in record and record[province_field] else None
+                street = self._record_geo_value(record, address_field)
+                district = self._record_geo_value(record, district_field)
+                canton = self._record_geo_value(record, canton_field)
+                province = self._record_geo_value(record, province_field)
 
                 # Check if we have at least province (minimum required)
                 if not province:
@@ -430,13 +520,6 @@ class EnhancementService:
                     enhanced_records.append(record)
                     continue
 
-                # Build a cache key from all components
-                cache_key_parts = [p for p in [street, district, canton, province, country] if p]
-                cache_key = ", ".join(cache_key_parts)
-
-                # Check if already in cache
-                was_cached = cache_key in self.geocode_cache
-
                 # Use fallback geocoding strategy
                 geocode_result = self._geocode_with_fallback(
                     street=street,
@@ -444,25 +527,33 @@ class EnhancementService:
                     canton=canton,
                     province=province,
                     country=country,
-                    max_retries=3
+                    max_retries=3,
+                    allow_external=True,
                 )
 
                 if geocode_result:
+                    fallback_address = ", ".join(
+                        p for p in [street, district, canton, province, country] if p
+                    )
                     record['latitude'] = geocode_result['latitude']
                     record['longitude'] = geocode_result['longitude']
                     self.apply_location_field(record)
-                    record['geocoded_address'] = geocode_result.get('geocoded_address', cache_key)
+                    record['geocoded_address'] = geocode_result.get('geocoded_address', fallback_address)
                     record['geocoding_level'] = geocode_result.get('geocoding_level', 0)
                     record['geocoding_description'] = geocode_result.get('geocoding_description', 'Unknown')
+                    record['geocoding_precision'] = geocode_result.get('geocoding_precision', 'unknown')
+                    record['geocoding_source'] = geocode_result.get('geocoding_source', 'unknown')
                     record['geocoding_status'] = 'success'
 
                     # Track level statistics
                     level = geocode_result.get('geocoding_level', 0)
-                    if level in [1, 2, 3, 4]:
+                    if level in [1, 2, 3, 4, 5]:
                         stats[f'level_{level}'] += 1
 
-                    if was_cached:
+                    if geocode_result.get('from_cache'):
                         stats['cached'] += 1
+                    elif geocode_result.get('geocoding_source') == 'local_admin_centroid':
+                        stats['geocoded'] += 1
                     else:
                         stats['geocoded'] += 1
                         # Rate limiting only for new geocoding requests
@@ -512,6 +603,7 @@ class EnhancementService:
         logger.info(f"    Level 2 (District): {stats['level_2']}")
         logger.info(f"    Level 3 (Canton): {stats['level_3']}")
         logger.info(f"    Level 4 (Province): {stats['level_4']}")
+        logger.info(f"    Level 5 (Local province centroid): {stats['level_5']}")
         
         if context:
             context.report_progress(
@@ -526,6 +618,159 @@ class EnhancementService:
             'output_file': output_file,
             'count': len(enhanced_records),
             'stats': stats
+        }
+
+    def repair_missing_geocoding(
+        self,
+        input_file: str,
+        output_file: str,
+        address_field: str = "project_direccion_exacta",
+        province_field: str = "project_provincia",
+        canton_field: str = "project_canton",
+        district_field: str = "project_distrito",
+        country: str = "Costa Rica",
+        rate_limit: float = 1.0,
+        allow_external: bool = False,
+        chunk_size: int = 1024 * 1024,
+        progress_interval: int = 10000,
+    ) -> Dict[str, Any]:
+        """
+        Repair records missing a valid OpenSearch geo_point without loading all
+        records in memory.
+
+        Existing valid coordinates are preserved. Missing records are retried
+        with the same fallback strategy used by the geocoding stage, including
+        csv_* location fallbacks and local province centroids.
+        """
+        from services.validation_enrichment_service import ValidationEnrichmentService
+
+        input_path = Path(input_file)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_file}")
+
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.cache_file = input_path.parent / "geocode_cache.json"
+        self._load_geocode_cache(self.cache_file)
+
+        reader = ValidationEnrichmentService()
+        stats = {
+            "processed": 0,
+            "already_geocoded": 0,
+            "repaired": 0,
+            "cached": 0,
+            "failed": 0,
+            "skipped": 0,
+            "missing_after": 0,
+            "level_1": 0,
+            "level_2": 0,
+            "level_3": 0,
+            "level_4": 0,
+            "level_5": 0,
+        }
+
+        started_at = time.time()
+        first_record = True
+        with open(output_path, "w", encoding="utf-8") as out:
+            out.write("[\n")
+
+            for record in reader._iter_json_array(input_path, chunk_size=chunk_size):
+                stats["processed"] += 1
+
+                if self.apply_location_field(record):
+                    stats["already_geocoded"] += 1
+                else:
+                    record.pop("location", None)
+                    street = self._record_geo_value(record, address_field)
+                    district = self._record_geo_value(record, district_field)
+                    canton = self._record_geo_value(record, canton_field)
+                    province = self._record_geo_value(record, province_field)
+
+                    if not province:
+                        record["geocoding_status"] = "no_address"
+                        stats["skipped"] += 1
+                    else:
+                        geocode_result = self._geocode_with_fallback(
+                            street=street,
+                            district=district,
+                            canton=canton,
+                            province=province,
+                            country=country,
+                            max_retries=3,
+                            allow_external=allow_external,
+                        )
+
+                        if geocode_result:
+                            record["latitude"] = geocode_result["latitude"]
+                            record["longitude"] = geocode_result["longitude"]
+                            self.apply_location_field(record)
+                            record["geocoded_address"] = geocode_result.get(
+                                "geocoded_address",
+                                ", ".join(p for p in [street, district, canton, province, country] if p),
+                            )
+                            record["geocoding_level"] = geocode_result.get("geocoding_level", 0)
+                            record["geocoding_description"] = geocode_result.get(
+                                "geocoding_description",
+                                "Unknown",
+                            )
+                            record["geocoding_precision"] = geocode_result.get(
+                                "geocoding_precision",
+                                "unknown",
+                            )
+                            record["geocoding_source"] = geocode_result.get(
+                                "geocoding_source",
+                                "unknown",
+                            )
+                            record["geocoding_status"] = "success"
+                            stats["repaired"] += 1
+
+                            level = geocode_result.get("geocoding_level", 0)
+                            if level in [1, 2, 3, 4, 5]:
+                                stats[f"level_{level}"] += 1
+
+                            if geocode_result.get("from_cache"):
+                                stats["cached"] += 1
+                            elif geocode_result.get("geocoding_source") != "local_admin_centroid":
+                                time.sleep(rate_limit)
+                        else:
+                            record["geocoding_status"] = "failed"
+                            stats["failed"] += 1
+
+                    if not self.apply_location_field(record):
+                        stats["missing_after"] += 1
+
+                if not first_record:
+                    out.write(",\n")
+                json.dump(record, out, ensure_ascii=False)
+                first_record = False
+
+                if progress_interval and stats["processed"] % progress_interval == 0:
+                    elapsed = max(time.time() - started_at, 0.001)
+                    rate = stats["processed"] / elapsed
+                    logger.info(
+                        "Processed %s; repaired %s; missing after %s; %.2f records/sec",
+                        stats["processed"],
+                        stats["repaired"],
+                        stats["missing_after"],
+                        rate,
+                    )
+
+            out.write("\n]\n")
+
+        self._save_geocode_cache(self.cache_file)
+
+        logger.info("Missing geocoding repair completed")
+        logger.info(f"  Records processed: {stats['processed']}")
+        logger.info(f"  Already geocoded: {stats['already_geocoded']}")
+        logger.info(f"  Repaired: {stats['repaired']}")
+        logger.info(f"  Missing after repair: {stats['missing_after']}")
+
+        return {
+            "status": "success",
+            "output_file": str(output_path),
+            "count": stats["processed"],
+            "stats": stats,
         }
     
     def generate_summaries(

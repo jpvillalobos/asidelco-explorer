@@ -361,6 +361,42 @@ def cmd_add_geo_point(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repair_geocoding(args: argparse.Namespace) -> int:
+    from services.enhancement_service import EnhancementService
+
+    svc = EnhancementService()
+    result = svc.repair_missing_geocoding(
+        input_file=str(args.input_file),
+        output_file=str(args.output_file),
+        address_field=args.address_field,
+        province_field=args.province_field,
+        canton_field=args.canton_field,
+        district_field=args.district_field,
+        country=args.country,
+        rate_limit=args.rate_limit,
+        allow_external=args.allow_external_geocoder,
+        chunk_size=args.chunk_size,
+        progress_interval=args.progress_interval,
+    )
+
+    stats = result["stats"]
+    print(f"Geocoding repair output: {result['output_file']}")
+    print(f"Records processed: {stats['processed']}")
+    print(f"Already geocoded: {stats['already_geocoded']}")
+    print(f"Repaired: {stats['repaired']}")
+    print(f"From cache: {stats['cached']}")
+    print(f"Failed: {stats['failed']}")
+    print(f"Skipped without province: {stats['skipped']}")
+    print(f"Missing after repair: {stats['missing_after']}")
+    print("Level breakdown:")
+    print(f"  Level 1 full address: {stats['level_1']}")
+    print(f"  Level 2 district: {stats['level_2']}")
+    print(f"  Level 3 canton: {stats['level_3']}")
+    print(f"  Level 4 province: {stats['level_4']}")
+    print(f"  Level 5 local province centroid: {stats['level_5']}")
+    return 0
+
+
 def cmd_prepare_for_indexing(args: argparse.Namespace) -> int:
     from services.search_preparation_service import SearchPreparationService
 
@@ -490,6 +526,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_geo.add_argument("--chunk-size", type=int, default=1024 * 1024)
     p_geo.add_argument("--progress-interval", type=int, default=10000)
     p_geo.set_defaults(func=cmd_add_geo_point)
+
+    p_repair_geo = sp.add_parser(
+        "repair-geocoding",
+        help="Repair missing latitude/longitude/location fields in a large JSON array"
+    )
+    p_repair_geo.add_argument("input_file", type=Path)
+    p_repair_geo.add_argument("output_file", type=Path)
+    p_repair_geo.add_argument("--address-field", default="project_direccion_exacta")
+    p_repair_geo.add_argument("--province-field", default="project_provincia")
+    p_repair_geo.add_argument("--canton-field", default="project_canton")
+    p_repair_geo.add_argument("--district-field", default="project_distrito")
+    p_repair_geo.add_argument("--country", default="Costa Rica")
+    p_repair_geo.add_argument("--rate-limit", type=float, default=1.0)
+    p_repair_geo.add_argument(
+        "--allow-external-geocoder",
+        action="store_true",
+        help="Retry uncached addresses through the external geocoder before local centroid fallback"
+    )
+    p_repair_geo.add_argument("--chunk-size", type=int, default=1024 * 1024)
+    p_repair_geo.add_argument("--progress-interval", type=int, default=10000)
+    p_repair_geo.set_defaults(func=cmd_repair_geocoding)
 
     p_prepare = sp.add_parser(
         "prepare-for-indexing",
