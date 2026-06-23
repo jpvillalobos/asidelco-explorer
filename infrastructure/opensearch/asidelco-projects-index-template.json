@@ -1,0 +1,679 @@
+{
+  "index_patterns": [
+    "asidelco-explorer*"
+  ],
+  "priority": 500,
+  "version": 1,
+  "_meta": {
+    "description": "ASIDELCO project search index template for OpenSearch dashboards, geospatial search, and vector search.",
+    "source_file": "data/output/search_ready.json",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimension": 1536
+  },
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "refresh_interval": "30s",
+        "knn": true,
+        "knn.algo_param.ef_search": 100,
+        "mapping.total_fields.limit": 1000
+      },
+      "analysis": {
+        "normalizer": {
+          "lowercase_keyword": {
+            "type": "custom",
+            "filter": [
+              "lowercase",
+              "asciifolding"
+            ]
+          }
+        },
+        "analyzer": {
+          "asidelco_text": {
+            "type": "custom",
+            "tokenizer": "standard",
+            "filter": [
+              "lowercase",
+              "asciifolding"
+            ]
+          },
+          "asidelco_spanish": {
+            "type": "spanish"
+          }
+        }
+      }
+    },
+    "mappings": {
+      "dynamic": true,
+      "dynamic_templates": [
+        {
+          "strings_as_searchable_text": {
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "text",
+              "analyzer": "asidelco_text",
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 512
+                }
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "record_id": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword"
+        },
+        "csv_id": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword"
+        },
+        "csv_proyecto": {
+          "type": "long"
+        },
+        "csv_proyecto_num": {
+          "type": "long"
+        },
+        "csv_area": {
+          "type": "double"
+        },
+        "csv_area_num": {
+          "type": "double"
+        },
+        "csv_provincia": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 128
+            }
+          }
+        },
+        "csv_canton": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 128
+            }
+          }
+        },
+        "csv_distrito": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 128
+            }
+          }
+        },
+        "csv_clasificacion": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "csv_exonerado": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 32
+        },
+        "csv_fechaproyecto": {
+          "type": "date",
+          "format": "strict_date_optional_time||yyyy-MM-dd||epoch_millis",
+          "ignore_malformed": true
+        },
+        "csv_obra": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "csv_subobra": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "csv_unidad": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 32
+        },
+        "project_project_id": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword"
+        },
+        "project_num_proyecto": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword"
+        },
+        "project_num_apc": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword"
+        },
+        "project_num_boleta": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword"
+        },
+        "project_catastro": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "project_provincia": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 128
+            }
+          }
+        },
+        "project_canton": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 128
+            }
+          }
+        },
+        "project_distrito": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 128
+            }
+          }
+        },
+        "project_direccion_exacta": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "project_descripcion": {
+          "type": "text",
+          "analyzer": "asidelco_spanish",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "project_descripcion_del_proyecto": {
+          "type": "text",
+          "analyzer": "asidelco_spanish",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "project_detalle": {
+          "type": "text",
+          "analyzer": "asidelco_spanish"
+        },
+        "project_estado": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "project_estado_de_la_boleta": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "project_detalle_de_estado": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 256
+        },
+        "project_clasificacion": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "project_constancia_de_recibido": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 32
+        },
+        "project_pagar_proyecto": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 256
+        },
+        "project_fecha_proyecto": {
+          "type": "date",
+          "format": "strict_date_optional_time||yyyy-MM-dd||epoch_millis",
+          "ignore_malformed": true
+        },
+        "project_fecha_de_ingreso_tramite_municipal": {
+          "type": "date",
+          "format": "strict_date_optional_time||yyyy-MM-dd||epoch_millis",
+          "ignore_malformed": true
+        },
+        "project_tasado": {
+          "type": "keyword",
+          "ignore_above": 64
+        },
+        "project_tasado_num": {
+          "type": "double"
+        },
+        "project_monto_pendiente_de_pago": {
+          "type": "keyword",
+          "ignore_above": 64
+        },
+        "project_monto_pendiente_de_pago_num": {
+          "type": "double"
+        },
+        "project_cantidad_de_dias_en_cola_de_revision_de_la_municipalidad": {
+          "type": "keyword",
+          "ignore_above": 64
+        },
+        "project_dias_cola_municipalidad_num": {
+          "type": "long"
+        },
+        "price_per_m2_num": {
+          "type": "double"
+        },
+        "project_nombre_propietario": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "project_cedula_propietario": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "project_responsable": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "project_carnet_profesional": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "project_carnet_empresa": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "professional_nombrecompleto": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "professional_carne": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "professional_carnet": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "professional_cedula": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "professional_colegio": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 256
+        },
+        "professional_condicion": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "professional_correolaboral": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 256
+        },
+        "professional_correopermanente": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 256
+        },
+        "professional_telcelular": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "professional_teloficina": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "professional_fax": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "professional_direccion": {
+          "type": "text",
+          "analyzer": "asidelco_text"
+        },
+        "professional_lugar": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "latitude": {
+          "type": "double"
+        },
+        "longitude": {
+          "type": "double"
+        },
+        "location": {
+          "type": "geo_point"
+        },
+        "geocoded_address": {
+          "type": "text",
+          "analyzer": "asidelco_text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "geocoding_status": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 64
+        },
+        "geocoding_level": {
+          "type": "integer"
+        },
+        "geocoding_description": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "geocoding_precision": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "geocoding_source": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "resumen": {
+          "type": "text",
+          "analyzer": "asidelco_spanish",
+          "fields": {
+            "plain": {
+              "type": "text",
+              "analyzer": "asidelco_text"
+            },
+            "keyword": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 2048
+            }
+          }
+        },
+        "embedding": {
+          "type": "knn_vector",
+          "dimension": 1536,
+          "method": {
+            "name": "hnsw",
+            "space_type": "cosinesimil",
+            "engine": "lucene",
+            "parameters": {
+              "ef_construction": 128,
+              "m": 16
+            }
+          }
+        },
+        "embedding_model": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "embedding_dimension": {
+          "type": "integer"
+        },
+        "summary_model": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 128
+        },
+        "summary_tokens": {
+          "type": "integer",
+          "ignore_malformed": true
+        },
+        "metadata_merged_at": {
+          "type": "date",
+          "format": "strict_date_optional_time||yyyy-MM-dd'T'HH:mm:ss.SSSSSS||epoch_millis",
+          "ignore_malformed": true
+        },
+        "metadata_row_index": {
+          "type": "long"
+        },
+        "metadata_warnings": {
+          "type": "keyword",
+          "normalizer": "lowercase_keyword",
+          "ignore_above": 512
+        },
+        "index_ready": {
+          "properties": {
+            "is_ready": {
+              "type": "boolean"
+            },
+            "errors": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            },
+            "warnings": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            },
+            "prepared_at": {
+              "type": "date",
+              "format": "strict_date_optional_time||yyyy-MM-dd'T'HH:mm:ss.SSSSSS||epoch_millis",
+              "ignore_malformed": true
+            }
+          }
+        },
+        "validation": {
+          "properties": {
+            "is_valid": {
+              "type": "boolean"
+            },
+            "errors": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            },
+            "warnings": {
+              "type": "keyword",
+              "normalizer": "lowercase_keyword",
+              "ignore_above": 512
+            },
+            "validated_at": {
+              "type": "date",
+              "format": "strict_date_optional_time||yyyy-MM-dd'T'HH:mm:ss.SSSSSS||epoch_millis",
+              "ignore_malformed": true
+            }
+          }
+        },
+        "enrichment": {
+          "properties": {
+            "location_normalized": {
+              "properties": {
+                "provincia": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 128
+                },
+                "canton": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 128
+                },
+                "distrito": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 128
+                },
+                "full_location": {
+                  "type": "text",
+                  "analyzer": "asidelco_text",
+                  "fields": {
+                    "keyword": {
+                      "type": "keyword",
+                      "normalizer": "lowercase_keyword",
+                      "ignore_above": 512
+                    }
+                  }
+                }
+              }
+            },
+            "project_age_days": {
+              "type": "long"
+            },
+            "project_age_years": {
+              "type": "double"
+            },
+            "classification": {
+              "properties": {
+                "category": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 128
+                },
+                "subcategory": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 128
+                },
+                "is_residential": {
+                  "type": "boolean"
+                },
+                "is_commercial": {
+                  "type": "boolean"
+                },
+                "is_social_interest": {
+                  "type": "boolean"
+                },
+                "is_exonerated": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "financial": {
+              "properties": {
+                "tasado_amount": {
+                  "type": "double"
+                },
+                "price_per_m2": {
+                  "type": "double"
+                },
+                "is_high_value": {
+                  "type": "boolean"
+                },
+                "is_low_value": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "professional_info": {
+              "properties": {
+                "license_prefix": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 64
+                },
+                "college": {
+                  "type": "keyword",
+                  "normalizer": "lowercase_keyword",
+                  "ignore_above": 256
+                },
+                "is_engineer": {
+                  "type": "boolean"
+                },
+                "is_architect": {
+                  "type": "boolean"
+                },
+                "has_company": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "completeness_score": {
+              "type": "double"
+            },
+            "quality_score": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -162,10 +162,14 @@ pipeline:
             host: localhost
             port: 9200
             index_name: asidelco-explorer
-            auth: null
-            use_ssl: false
+            auth:
+              username: admin
+              password_env: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+            use_ssl: true
             verify_certs: false
             batch_size: 500
+            id_field: record_id
+            skip_not_ready: true
             mappings: null
             settings: null
 

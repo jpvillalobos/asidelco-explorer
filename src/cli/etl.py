@@ -122,8 +122,8 @@ def cmd_load_csv_to_opensearch(args: argparse.Namespace) -> int:
     osvc = OpenSearchService(host=args.opensearch_host, port=args.opensearch_port)
     df = csv.read_csv(args.input_file)
     docs = df.to_dict(orient="records")
-    result = osvc.bulk_index(index_name=args.index_name, documents=docs, batch_size=args.batch_size)
-    print(f"Indexed {result.get('indexed', 0)} documents into {args.index_name}")
+    result = osvc.bulk_index(index_name=args.index_name, data=docs, batch_size=args.batch_size)
+    print(f"Indexed {result.get('indexed', result.get('total_indexed', 0))} documents into {args.index_name}")
     return 0
 
 
@@ -388,12 +388,21 @@ def cmd_repair_geocoding(args: argparse.Namespace) -> int:
     print(f"Failed: {stats['failed']}")
     print(f"Skipped without province: {stats['skipped']}")
     print(f"Missing after repair: {stats['missing_after']}")
+    print(f"Online geocoded: {stats.get('online_geocoded', 0)}")
+    print(f"Manual district centroids: {stats.get('manual_district_centroid', 0)}")
+    print(f"Dataset district centroids: {stats.get('dataset_district_centroid', 0)}")
+    print(f"Dataset canton centroids: {stats.get('dataset_canton_centroid', 0)}")
+    print(f"Approximate centroids improved: {stats.get('approximate_centroid_repaired', 0)}")
+    print(f"Province centroids improved: {stats.get('local_admin_centroid_repaired', 0)}")
     print("Level breakdown:")
     print(f"  Level 1 full address: {stats['level_1']}")
     print(f"  Level 2 district: {stats['level_2']}")
     print(f"  Level 3 canton: {stats['level_3']}")
     print(f"  Level 4 province: {stats['level_4']}")
     print(f"  Level 5 local province centroid: {stats['level_5']}")
+    print(f"  Level 6 dataset district centroid: {stats.get('level_6', 0)}")
+    print(f"  Level 7 dataset canton centroid: {stats.get('level_7', 0)}")
+    print(f"  Level 8 manual district centroid: {stats.get('level_8', 0)}")
     return 0
 
 

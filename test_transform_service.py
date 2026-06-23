@@ -529,10 +529,84 @@ def test_prepare_for_indexing_service():
         return False
 
 
+def test_opensearch_service_streaming_load():
+    """Test OpenSearch load streams JSON, batches records, and skips not-ready docs"""
+    print("="*80)
+    print("TEST 9: OpenSearch Service Streaming Load")
+    print("="*80)
+
+    try:
+        from services.opensearch_service import OpenSearchService
+
+        class FakeLoader:
+            def __init__(self):
+                self.created = []
+                self.batches = []
+
+            def create_index(self, index_name, mappings=None, settings=None):
+                self.created.append((index_name, mappings, settings))
+                return True
+
+            def bulk_index(self, index_name, documents, id_field=None, chunk_size=500):
+                docs = list(documents)
+                self.batches.append({
+                    "index_name": index_name,
+                    "documents": docs,
+                    "id_field": id_field,
+                    "chunk_size": chunk_size,
+                })
+                return {"success": True, "indexed": len(docs), "failed": 0}
+
+        service = OpenSearchService()
+        fake_loader = FakeLoader()
+        service._get_loader = lambda **kwargs: fake_loader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "search_ready.json"
+            input_file.write_text(json.dumps([
+                {"record_id": "1", "index_ready": {"is_ready": True}},
+                {"record_id": "2", "index_ready": {"is_ready": False}},
+                {"record_id": "3", "index_ready": {"is_ready": True}},
+            ]), encoding="utf-8")
+
+            result = service.load_data(
+                input_file=str(input_file),
+                index_name="asidelco-explorer-test",
+                batch_size=1,
+                id_field="record_id",
+                mappings={"properties": {}},
+                settings={"index": {"number_of_replicas": 0}},
+                progress_interval=0,
+            )
+
+        assert fake_loader.created == [(
+            "asidelco-explorer-test",
+            {"properties": {}},
+            {"index": {"number_of_replicas": 0}},
+        )]
+        assert result["count"] == 3
+        assert result["indexed"] == 2
+        assert result["failed"] == 0
+        assert result["skipped_not_ready"] == 1
+        assert len(fake_loader.batches) == 2
+        assert [batch["documents"][0]["record_id"] for batch in fake_loader.batches] == ["1", "3"]
+        assert all(batch["id_field"] == "record_id" for batch in fake_loader.batches)
+        print("✓ Streams JSON array, skips not-ready records, and batches correctly")
+
+        print("\n✅ OpenSearch Service Streaming Load: All tests passed\n")
+        return True
+
+    except Exception as e:
+        print(f"\n❌ OpenSearch streaming load test failed: {e}\n")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def test_generate_summaries_replaces_placeholder():
     """Test future pipeline summaries replace bad placeholder summaries"""
     print("="*80)
-    print("TEST 9: Generate Summaries Replaces Placeholder")
+    print("TEST 10: Generate Summaries Replaces Placeholder")
     print("="*80)
 
     try:
@@ -680,7 +754,9 @@ def test_geocoding_csv_fallback_and_local_centroid():
         from services.enhancement_service import EnhancementService
 
         service = EnhancementService()
-        service._geocode_address = lambda address, max_retries=3, allow_external=True: None
+        service._geocode_address = (
+            lambda address, max_retries=3, allow_external=True, external_rate_limit=0.0: None
+        )
         record = {
             "project_provincia": "",
             "csv_provincia": "Cartago",
@@ -711,6 +787,390 @@ def test_geocoding_csv_fallback_and_local_centroid():
 
     except Exception as e:
         print(f"\n❌ Geocoding CSV fallback/local-centroid test failed: {e}\n")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_repair_geocoding_uses_dataset_centroids():
+    """Test local province centroids are improved from dataset coordinates"""
+    print("="*80)
+    print("TEST 13: Repair Geocoding Uses Dataset Centroids")
+    print("="*80)
+
+    try:
+        from services.enhancement_service import EnhancementService
+
+        service = EnhancementService()
+        records = [
+            {
+                "record_id": "source-district",
+                "project_provincia": "SAN JOSE",
+                "project_canton": "SAN JOSE",
+                "project_distrito": "ZAPOTE",
+                "latitude": 9.92,
+                "longitude": -84.05,
+                "location": {"lat": 9.92, "lon": -84.05},
+                "geocoding_source": "nominatim",
+            },
+            {
+                "record_id": "repair-district",
+                "project_provincia": "SAN JOSE",
+                "project_canton": "SAN JOSE",
+                "project_distrito": "ZAPOTE",
+                "latitude": 9.9281,
+                "longitude": -84.0907,
+                "location": {"lat": 9.9281, "lon": -84.0907},
+                "geocoding_source": "local_admin_centroid",
+            },
+            {
+                "record_id": "source-canton",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "POTRERO CERRADO",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "nominatim",
+            },
+            {
+                "record_id": "repair-canton",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "DISTRICT WITHOUT MANUAL COORDINATES",
+                "latitude": 9.8644,
+                "longitude": -83.9194,
+                "location": {"lat": 9.8644, "lon": -83.9194},
+                "geocoding_source": "local_admin_centroid",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "input.json"
+            output_file = Path(tmpdir) / "output.json"
+            input_file.write_text(json.dumps(records), encoding="utf-8")
+
+            result = service.repair_missing_geocoding(
+                input_file=str(input_file),
+                output_file=str(output_file),
+                allow_external=False,
+                progress_interval=0,
+            )
+            output = {
+                record["record_id"]: record
+                for record in json.loads(output_file.read_text(encoding="utf-8"))
+            }
+
+        district = output["repair-district"]
+        canton = output["repair-canton"]
+
+        assert result["stats"]["local_admin_centroid_repaired"] == 2
+        assert result["stats"]["approximate_centroid_repaired"] == 2
+        assert result["stats"]["dataset_district_centroid"] == 1
+        assert result["stats"]["dataset_canton_centroid"] == 1
+        assert district["geocoding_precision"] == "district_derived"
+        assert district["geocoding_source"] == "dataset_admin_centroid"
+        assert district["location"] == {"lat": 9.92, "lon": -84.05}
+        assert canton["geocoding_precision"] == "canton_derived"
+        assert canton["geocoding_source"] == "dataset_admin_centroid"
+        assert canton["location"] == {"lat": 9.98, "lon": -83.86}
+        print("✓ Province centroid records improved from dataset district/canton coordinates")
+
+        print("\n✅ Repair Geocoding Uses Dataset Centroids: All tests passed\n")
+        return True
+
+    except Exception as e:
+        print(f"\n❌ Dataset centroid geocoding repair test failed: {e}\n")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_repair_geocoding_uses_cache_before_dataset_centroid():
+    """Test geocoding repair tries cache before dataset fallback"""
+    print("="*80)
+    print("TEST 14: Repair Geocoding Uses Cache Before Dataset Centroid")
+    print("="*80)
+
+    try:
+        from services.enhancement_service import EnhancementService
+
+        service = EnhancementService()
+        records = [
+            {
+                "record_id": "source-canton",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "POTRERO CERRADO",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "nominatim",
+            },
+            {
+                "record_id": "repair-canton",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "CIPRESES",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "dataset_admin_centroid",
+                "geocoding_precision": "canton_derived",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "input.json"
+            output_file = Path(tmpdir) / "output.json"
+            cache_file = Path(tmpdir) / "geocode_cache.json"
+            input_file.write_text(json.dumps(records), encoding="utf-8")
+            cache_file.write_text(json.dumps({
+                "CIPRESES, OREAMUNO, CARTAGO, Costa Rica": {
+                    "latitude": 9.935,
+                    "longitude": -83.82,
+                }
+            }), encoding="utf-8")
+
+            result = service.repair_missing_geocoding(
+                input_file=str(input_file),
+                output_file=str(output_file),
+                allow_external=False,
+                progress_interval=0,
+            )
+            output = {
+                record["record_id"]: record
+                for record in json.loads(output_file.read_text(encoding="utf-8"))
+            }
+
+        repaired = output["repair-canton"]
+
+        assert result["stats"]["cached"] == 1
+        assert result["stats"]["dataset_canton_centroid"] == 0
+        assert repaired["location"] == {"lat": 9.935, "lon": -83.82}
+        assert repaired["geocoding_source"] == "nominatim"
+        assert repaired["geocoding_precision"] == "district"
+        print("✓ Cached district geocode wins before dataset centroid fallback")
+
+        print("\n✅ Repair Geocoding Uses Cache Before Dataset Centroid: All tests passed\n")
+        return True
+
+    except Exception as e:
+        print(f"\n❌ Cache-before-dataset geocoding repair test failed: {e}\n")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_repair_geocoding_uses_online_before_dataset_centroid():
+    """Test geocoding repair tries online geocoder before dataset fallback"""
+    print("="*80)
+    print("TEST 15: Repair Geocoding Uses Online Before Dataset Centroid")
+    print("="*80)
+
+    try:
+        from services.enhancement_service import EnhancementService
+
+        class FakeLocation:
+            latitude = 9.936
+            longitude = -83.821
+
+        class FakeGeocoder:
+            def geocode(self, address, timeout=10):
+                return FakeLocation()
+
+        service = EnhancementService()
+        service.geocoder = FakeGeocoder()
+        records = [
+            {
+                "record_id": "source-canton",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "POTRERO CERRADO",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "nominatim",
+            },
+            {
+                "record_id": "repair-canton",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "CIPRESES",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "dataset_admin_centroid",
+                "geocoding_precision": "canton_derived",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "input.json"
+            output_file = Path(tmpdir) / "output.json"
+            cache_file = Path(tmpdir) / "geocode_cache.json"
+            input_file.write_text(json.dumps(records), encoding="utf-8")
+
+            result = service.repair_missing_geocoding(
+                input_file=str(input_file),
+                output_file=str(output_file),
+                allow_external=True,
+                rate_limit=0,
+                progress_interval=0,
+            )
+            output = {
+                record["record_id"]: record
+                for record in json.loads(output_file.read_text(encoding="utf-8"))
+            }
+            cache = json.loads(cache_file.read_text(encoding="utf-8"))
+
+        repaired = output["repair-canton"]
+
+        assert result["stats"]["online_geocoded"] == 1
+        assert result["stats"]["dataset_canton_centroid"] == 0
+        assert repaired["location"] == {"lat": 9.936, "lon": -83.821}
+        assert repaired["geocoding_source"] == "nominatim"
+        assert repaired["geocoding_precision"] == "district"
+        assert "CIPRESES, OREAMUNO, CARTAGO, Costa Rica" in cache
+        print("✓ Online district geocode wins before dataset centroid fallback and is cached")
+
+        print("\n✅ Repair Geocoding Uses Online Before Dataset Centroid: All tests passed\n")
+        return True
+
+    except Exception as e:
+        print(f"\n❌ Online-before-dataset geocoding repair test failed: {e}\n")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_repair_geocoding_uses_manual_before_dataset_centroid():
+    """Test known manual district coordinates win before dataset fallback"""
+    print("="*80)
+    print("TEST 16: Repair Geocoding Uses Manual Before Dataset Centroid")
+    print("="*80)
+
+    try:
+        from services.enhancement_service import EnhancementService
+
+        service = EnhancementService()
+        records = [
+            {
+                "record_id": "source-canton",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "POTRERO CERRADO",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "nominatim",
+            },
+            {
+                "record_id": "repair-manual",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "CIPRESES",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "dataset_admin_centroid",
+                "geocoding_precision": "canton_derived",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "input.json"
+            output_file = Path(tmpdir) / "output.json"
+            input_file.write_text(json.dumps(records), encoding="utf-8")
+
+            result = service.repair_missing_geocoding(
+                input_file=str(input_file),
+                output_file=str(output_file),
+                allow_external=False,
+                progress_interval=0,
+            )
+            output = {
+                record["record_id"]: record
+                for record in json.loads(output_file.read_text(encoding="utf-8"))
+            }
+
+        repaired = output["repair-manual"]
+
+        assert result["stats"]["manual_district_centroid"] == 1
+        assert result["stats"]["dataset_canton_centroid"] == 0
+        assert repaired["geocoding_source"] == "manual_district_centroid"
+        assert repaired["geocoding_precision"] == "district_manual"
+        assert repaired["location"] == {"lat": 9.8938889, "lon": -83.8419444}
+        print("✓ Manual district centroid wins before dataset centroid fallback")
+
+        print("\n✅ Repair Geocoding Uses Manual Before Dataset Centroid: All tests passed\n")
+        return True
+
+    except Exception as e:
+        print(f"\n❌ Manual-before-dataset geocoding repair test failed: {e}\n")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_repair_geocoding_does_not_reuse_dataset_centroid_as_source():
+    """Test existing dataset centroids are not reused as exact centroid sources"""
+    print("="*80)
+    print("TEST 17: Repair Geocoding Does Not Reuse Dataset Centroid As Source")
+    print("="*80)
+
+    try:
+        from services.enhancement_service import EnhancementService
+
+        service = EnhancementService()
+        records = [
+            {
+                "record_id": "source-approximate",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "DISTRICT WITHOUT MANUAL COORDINATES",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "dataset_admin_centroid",
+                "geocoding_precision": "canton_derived",
+            },
+            {
+                "record_id": "repair-approximate",
+                "project_provincia": "CARTAGO",
+                "project_canton": "OREAMUNO",
+                "project_distrito": "DISTRICT WITHOUT MANUAL COORDINATES",
+                "latitude": 9.98,
+                "longitude": -83.86,
+                "location": {"lat": 9.98, "lon": -83.86},
+                "geocoding_source": "dataset_admin_centroid",
+                "geocoding_precision": "canton_derived",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "input.json"
+            output_file = Path(tmpdir) / "output.json"
+            input_file.write_text(json.dumps(records), encoding="utf-8")
+
+            result = service.repair_missing_geocoding(
+                input_file=str(input_file),
+                output_file=str(output_file),
+                allow_external=False,
+                progress_interval=0,
+            )
+            output = json.loads(output_file.read_text(encoding="utf-8"))
+
+        assert result["stats"]["dataset_district_centroid"] == 0
+        assert result["stats"]["dataset_canton_centroid"] == 0
+        assert all(record["geocoding_source"] == "local_admin_centroid" for record in output)
+        print("✓ Existing dataset centroids are not reused as source evidence")
+
+        print("\n✅ Repair Geocoding Does Not Reuse Dataset Centroid As Source: All tests passed\n")
+        return True
+
+    except Exception as e:
+        print(f"\n❌ Dataset-centroid source exclusion test failed: {e}\n")
         import traceback
         traceback.print_exc()
         return False
@@ -783,10 +1243,16 @@ def run_all_tests():
         ("Deterministic Project Summary", test_deterministic_project_summary),
         ("Geo Point Location Field", test_geopoint_location_field),
         ("Prepare For Indexing Service", test_prepare_for_indexing_service),
+        ("OpenSearch Service Streaming Load", test_opensearch_service_streaming_load),
         ("Generate Summaries Replaces Placeholder", test_generate_summaries_replaces_placeholder),
         ("Embedding Force Regenerate Flag", test_embedding_force_regenerate_flag),
         ("Geocoding Cache Ignores Negative Entries", test_geocoding_cache_ignores_negative_entries),
         ("Geocoding CSV Fallback And Local Centroid", test_geocoding_csv_fallback_and_local_centroid),
+        ("Repair Geocoding Uses Dataset Centroids", test_repair_geocoding_uses_dataset_centroids),
+        ("Repair Geocoding Uses Cache Before Dataset Centroid", test_repair_geocoding_uses_cache_before_dataset_centroid),
+        ("Repair Geocoding Uses Online Before Dataset Centroid", test_repair_geocoding_uses_online_before_dataset_centroid),
+        ("Repair Geocoding Uses Manual Before Dataset Centroid", test_repair_geocoding_uses_manual_before_dataset_centroid),
+        ("Repair Geocoding Does Not Reuse Dataset Centroid As Source", test_repair_geocoding_does_not_reuse_dataset_centroid_as_source),
         ("Edge Cases", test_edge_cases)
     ]
 

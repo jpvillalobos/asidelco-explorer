@@ -1,7 +1,7 @@
 """
 Enhancement Service - Geocoding and AI Summarization
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import logging
 import json
 from pathlib import Path
@@ -10,6 +10,8 @@ from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import time
 from openai import OpenAI
 import os
+import statistics
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +28,30 @@ class EnhancementService:
         "PUNTARENAS": {"latitude": 9.9763, "longitude": -84.8384},
         "LIMON": {"latitude": 9.9896, "longitude": -83.0350},
     }
+
+    MANUAL_DISTRICT_CENTROIDS = {
+        ("CARTAGO", "OREAMUNO", "CIPRESES"): {"latitude": 9.8938889, "longitude": -83.8419444},
+        ("CARTAGO", "TURRIALBA", "TAYUTIC"): {"latitude": 9.8113889, "longitude": -83.5475000},
+        ("CARTAGO", "JIMENEZ", "PEJIBAYE"): {"latitude": 9.7738889, "longitude": -83.6994444},
+        ("CARTAGO", "OREAMUNO", "SANTA ROSA"): {"latitude": 10.0258333, "longitude": -83.8769444},
+        ("SAN JOSE", "GOICOECHEA", "SAN FRANCISCO"): {"latitude": 9.9419444, "longitude": -84.0713889},
+        ("SAN JOSE", "DESAMPARADOS", "SAN ANTONIO"): {"latitude": 9.8988889, "longitude": -84.0469444},
+        ("SAN JOSE", "MORA", "JARIS"): {"latitude": 9.8744444, "longitude": -84.2819444},
+        ("SAN JOSE", "PURISCAL", "CANDELARITA"): {"latitude": 9.7883333, "longitude": -84.3369444},
+        ("HEREDIA", "SANTA BARBARA", "JESUS"): {"latitude": 10.0547222, "longitude": -84.1408333},
+        ("ALAJUELA", "OROTINA", "EL MASTATE"): {"latitude": 9.9169444, "longitude": -84.5591667},
+        ("ALAJUELA", "SAN CARLOS", "BUENAVISTA"): {"latitude": 10.2816667, "longitude": -84.4755556},
+        ("GUANACASTE", "CANAS", "POROZAL"): {"latitude": 10.2686111, "longitude": -85.1750000},
+        ("PUNTARENAS", "MONTES DE ORO", "SAN ISIDRO"): {"latitude": 10.0500000, "longitude": -84.7200000},
+        ("PUNTARENAS", "BUENOS AIRES", "COLINAS"): {"latitude": 9.0311111, "longitude": -83.4638889},
+    }
     
     def __init__(self):
         self.geocoder = Nominatim(user_agent="asidelco-explorer")
         self.geocode_cache = {}
+        self.geocode_negative_cache = set()
         self.cache_file = None
+        self._last_external_geocode_at = 0.0
         
         # Initialize OpenAI client (will be set when needed)
         self._openai_client = None
@@ -157,6 +178,16 @@ class EnhancementService:
             return ""
         return str(value).strip()
 
+    def _normalize_admin_key(self, value: Any) -> str:
+        text = self._normalize_geo_text(value)
+        if not text:
+            return ""
+        text = "".join(
+            char for char in unicodedata.normalize("NFKD", text)
+            if not unicodedata.combining(char)
+        )
+        return " ".join(text.upper().replace(".", "").split())
+
     def _record_geo_value(self, record: Dict[str, Any], field: str) -> Optional[str]:
         value = self._normalize_geo_text(record.get(field))
         if value:
@@ -174,6 +205,123 @@ class EnhancementService:
                 return value
 
         return None
+
+    def _record_admin_values(
+        self,
+        record: Dict[str, Any],
+        province_field: str = "project_provincia",
+        canton_field: str = "project_canton",
+        district_field: str = "project_distrito",
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        return (
+            self._record_geo_value(record, province_field),
+            self._record_geo_value(record, canton_field),
+            self._record_geo_value(record, district_field),
+        )
+
+    def _admin_keys(
+        self,
+        province: Optional[str],
+        canton: Optional[str],
+        district: Optional[str],
+    ) -> Tuple[Tuple[str, str, str], Tuple[str, str]]:
+        province_key = self._normalize_admin_key(province)
+        canton_key = self._normalize_admin_key(canton)
+        district_key = self._normalize_admin_key(district)
+        return (province_key, canton_key, district_key), (province_key, canton_key)
+
+    def _location_coordinates(self, record: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+        location = record.get("location") or {}
+        latitude = location.get("lat", record.get("latitude")) if isinstance(location, dict) else record.get("latitude")
+        longitude = location.get("lon", record.get("longitude")) if isinstance(location, dict) else record.get("longitude")
+
+        if latitude in (None, "") or longitude in (None, ""):
+            return None
+
+        try:
+            lat = float(latitude)
+            lon = float(longitude)
+        except (TypeError, ValueError):
+            return None
+
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return None
+
+        return lat, lon
+
+    def _median_coordinate(self, coordinates: List[Tuple[float, float]]) -> Dict[str, float]:
+        return {
+            "latitude": statistics.median(lat for lat, _ in coordinates),
+            "longitude": statistics.median(lon for _, lon in coordinates),
+        }
+
+    def _dataset_centroid_result(
+        self,
+        province: Optional[str],
+        canton: Optional[str],
+        district: Optional[str],
+        exact_centroids: Dict[Tuple[str, str, str], Dict[str, Any]],
+        canton_centroids: Dict[Tuple[str, str], Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        exact_key, canton_key = self._admin_keys(province, canton, district)
+
+        exact = exact_centroids.get(exact_key)
+        if exact:
+            return {
+                "latitude": exact["latitude"],
+                "longitude": exact["longitude"],
+                "geocoding_level": 6,
+                "geocoding_description": "Dataset district centroid",
+                "geocoding_precision": "district_derived",
+                "geocoded_address": ", ".join(p for p in [district, canton, province, "Costa Rica"] if p),
+                "geocoding_source": "dataset_admin_centroid",
+                "centroid_sample_size": exact["sample_size"],
+            }
+
+        canton_centroid = canton_centroids.get(canton_key)
+        if canton_centroid:
+            return {
+                "latitude": canton_centroid["latitude"],
+                "longitude": canton_centroid["longitude"],
+                "geocoding_level": 7,
+                "geocoding_description": "Dataset canton centroid",
+                "geocoding_precision": "canton_derived",
+                "geocoded_address": ", ".join(p for p in [canton, province, "Costa Rica"] if p),
+                "geocoding_source": "dataset_admin_centroid",
+                "centroid_sample_size": canton_centroid["sample_size"],
+            }
+
+        return None
+
+    def _manual_district_centroid_result(
+        self,
+        province: Optional[str],
+        canton: Optional[str],
+        district: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        exact_key, _ = self._admin_keys(province, canton, district)
+        centroid = self.MANUAL_DISTRICT_CENTROIDS.get(exact_key)
+        if not centroid:
+            return None
+
+        return {
+            "latitude": centroid["latitude"],
+            "longitude": centroid["longitude"],
+            "geocoding_level": 8,
+            "geocoding_description": "Manual district centroid",
+            "geocoding_precision": "district_manual",
+            "geocoded_address": ", ".join(p for p in [district, canton, province, "Costa Rica"] if p),
+            "geocoding_source": "manual_district_centroid",
+        }
+
+    def _needs_geocoding_repair(self, record: Dict[str, Any]) -> bool:
+        if not self.apply_location_field(record):
+            return True
+        if record.get("geocoding_source") == "local_admin_centroid":
+            return True
+        if record.get("geocoding_precision") in {"canton_derived", "province"}:
+            return True
+        return False
 
     def _province_centroid(self, province: Optional[str]) -> Optional[Dict[str, Any]]:
         province_key = self._normalize_geo_text(province).upper()
@@ -262,12 +410,24 @@ class EnhancementService:
             logger.info(f"Saved {len(self.geocode_cache)} geocode entries to cache")
         except Exception as e:
             logger.warning(f"Failed to save geocode cache: {e}")
+
+    def _throttle_external_geocoder(self, rate_limit: float):
+        if rate_limit <= 0:
+            return
+
+        now = time.monotonic()
+        elapsed = now - self._last_external_geocode_at
+        if elapsed < rate_limit:
+            time.sleep(rate_limit - elapsed)
+
+        self._last_external_geocode_at = time.monotonic()
     
     def _geocode_address(
         self,
         address: str,
         max_retries: int = 3,
         allow_external: bool = True,
+        external_rate_limit: float = 0.0,
     ) -> Optional[Dict[str, float]]:
         """
         Geocode an address to lat/lon coordinates.
@@ -291,10 +451,14 @@ class EnhancementService:
         if not allow_external:
             return None
 
+        if address in self.geocode_negative_cache:
+            return None
+
         # Try geocoding with retries
         for attempt in range(max_retries):
             try:
                 logger.debug(f"Geocoding: {address} (attempt {attempt + 1}/{max_retries})")
+                self._throttle_external_geocoder(external_rate_limit)
                 location = self.geocoder.geocode(address, timeout=10)
 
                 if location:
@@ -307,6 +471,7 @@ class EnhancementService:
                     return result
                 else:
                     logger.debug(f"No geocode result for: {address}")
+                    self.geocode_negative_cache.add(address)
                     return None
 
             except GeocoderTimedOut:
@@ -315,14 +480,17 @@ class EnhancementService:
                     time.sleep(1)  # Wait before retry
                     continue
                 else:
+                    self.geocode_negative_cache.add(address)
                     return None
 
             except GeocoderServiceError as e:
                 logger.error(f"Geocoding service error for {address}: {e}")
+                self.geocode_negative_cache.add(address)
                 return None
 
             except Exception as e:
                 logger.error(f"Unexpected geocoding error for {address}: {e}")
+                self.geocode_negative_cache.add(address)
                 return None
 
         return None
@@ -336,6 +504,9 @@ class EnhancementService:
         country: str,
         max_retries: int = 3,
         allow_external: bool = True,
+        allow_local_fallback: bool = True,
+        include_street: bool = True,
+        external_rate_limit: float = 0.0,
     ) -> Optional[Dict[str, Any]]:
         """
         Geocode an address with multi-level fallback strategy.
@@ -361,7 +532,7 @@ class EnhancementService:
         fallback_levels = []
 
         # Level 1: Full address with street
-        if street and district and canton and province:
+        if include_street and street and district and canton and province:
             level1_parts = [street, district, canton, province, country]
             fallback_levels.append({
                 'level': 1,
@@ -408,6 +579,7 @@ class EnhancementService:
                 address,
                 max_retries=max_retries,
                 allow_external=allow_external,
+                external_rate_limit=external_rate_limit,
             )
 
             if result:
@@ -426,7 +598,19 @@ class EnhancementService:
             else:
                 logger.debug(f"Geocoding failed at level {level} ({description})")
 
-        centroid = self._province_centroid(province)
+        manual_centroid = self._manual_district_centroid_result(
+            province=province,
+            canton=canton,
+            district=district,
+        )
+        if manual_centroid:
+            logger.debug(f"Using manual district centroid fallback for: {district}, {canton}, {province}")
+            return manual_centroid
+
+        if allow_local_fallback:
+            centroid = self._province_centroid(province)
+        else:
+            centroid = None
         if centroid:
             logger.debug(f"Using local province centroid fallback for: {province}")
             return centroid
@@ -655,6 +839,45 @@ class EnhancementService:
         self._load_geocode_cache(self.cache_file)
 
         reader = ValidationEnrichmentService()
+        exact_coordinates: Dict[Tuple[str, str, str], List[Tuple[float, float]]] = {}
+        canton_coordinates: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
+
+        for record in reader._iter_json_array(input_path, chunk_size=chunk_size):
+            if record.get("geocoding_source") in {"local_admin_centroid", "dataset_admin_centroid"}:
+                continue
+
+            coordinates = self._location_coordinates(record)
+            if not coordinates:
+                continue
+
+            province, canton, district = self._record_admin_values(
+                record,
+                province_field=province_field,
+                canton_field=canton_field,
+                district_field=district_field,
+            )
+            exact_key, canton_key = self._admin_keys(province, canton, district)
+
+            if all(exact_key):
+                exact_coordinates.setdefault(exact_key, []).append(coordinates)
+            if all(canton_key):
+                canton_coordinates.setdefault(canton_key, []).append(coordinates)
+
+        exact_centroids = {
+            key: {
+                **self._median_coordinate(coordinates),
+                "sample_size": len(coordinates),
+            }
+            for key, coordinates in exact_coordinates.items()
+        }
+        canton_centroids = {
+            key: {
+                **self._median_coordinate(coordinates),
+                "sample_size": len(coordinates),
+            }
+            for key, coordinates in canton_coordinates.items()
+        }
+
         stats = {
             "processed": 0,
             "already_geocoded": 0,
@@ -668,6 +891,15 @@ class EnhancementService:
             "level_3": 0,
             "level_4": 0,
             "level_5": 0,
+            "level_6": 0,
+            "level_7": 0,
+            "level_8": 0,
+            "dataset_district_centroid": 0,
+            "dataset_canton_centroid": 0,
+            "manual_district_centroid": 0,
+            "online_geocoded": 0,
+            "approximate_centroid_repaired": 0,
+            "local_admin_centroid_repaired": 0,
         }
 
         started_at = time.time()
@@ -677,15 +909,20 @@ class EnhancementService:
 
             for record in reader._iter_json_array(input_path, chunk_size=chunk_size):
                 stats["processed"] += 1
+                original_geocoding_source = record.get("geocoding_source")
+                needs_repair = self._needs_geocoding_repair(record)
 
-                if self.apply_location_field(record):
+                if self.apply_location_field(record) and not needs_repair:
                     stats["already_geocoded"] += 1
                 else:
                     record.pop("location", None)
                     street = self._record_geo_value(record, address_field)
-                    district = self._record_geo_value(record, district_field)
-                    canton = self._record_geo_value(record, canton_field)
-                    province = self._record_geo_value(record, province_field)
+                    province, canton, district = self._record_admin_values(
+                        record,
+                        province_field=province_field,
+                        canton_field=canton_field,
+                        district_field=district_field,
+                    )
 
                     if not province:
                         record["geocoding_status"] = "no_address"
@@ -699,7 +936,20 @@ class EnhancementService:
                             country=country,
                             max_retries=3,
                             allow_external=allow_external,
+                            allow_local_fallback=False,
+                            include_street=False,
+                            external_rate_limit=rate_limit,
                         )
+                        if geocode_result is None:
+                            geocode_result = self._dataset_centroid_result(
+                                province=province,
+                                canton=canton,
+                                district=district,
+                                exact_centroids=exact_centroids,
+                                canton_centroids=canton_centroids,
+                            )
+                        if geocode_result is None:
+                            geocode_result = self._province_centroid(province)
 
                         if geocode_result:
                             record["latitude"] = geocode_result["latitude"]
@@ -726,13 +976,34 @@ class EnhancementService:
                             stats["repaired"] += 1
 
                             level = geocode_result.get("geocoding_level", 0)
-                            if level in [1, 2, 3, 4, 5]:
+                            if level in [1, 2, 3, 4, 5, 6, 7, 8]:
                                 stats[f"level_{level}"] += 1
 
                             if geocode_result.get("from_cache"):
                                 stats["cached"] += 1
+                                if needs_repair:
+                                    stats["approximate_centroid_repaired"] += 1
+                            elif geocode_result.get("geocoding_precision") == "district_manual":
+                                stats["manual_district_centroid"] += 1
+                                if needs_repair:
+                                    stats["approximate_centroid_repaired"] += 1
+                            elif geocode_result.get("geocoding_precision") == "district_derived":
+                                stats["dataset_district_centroid"] += 1
+                                if needs_repair:
+                                    stats["approximate_centroid_repaired"] += 1
+                                    if original_geocoding_source == "local_admin_centroid":
+                                        stats["local_admin_centroid_repaired"] += 1
+                            elif geocode_result.get("geocoding_precision") == "canton_derived":
+                                stats["dataset_canton_centroid"] += 1
+                                if needs_repair:
+                                    stats["approximate_centroid_repaired"] += 1
+                                    if original_geocoding_source == "local_admin_centroid":
+                                        stats["local_admin_centroid_repaired"] += 1
                             elif geocode_result.get("geocoding_source") != "local_admin_centroid":
-                                time.sleep(rate_limit)
+                                if geocode_result.get("geocoding_source") == "nominatim":
+                                    stats["online_geocoded"] += 1
+                                if needs_repair:
+                                    stats["approximate_centroid_repaired"] += 1
                         else:
                             record["geocoding_status"] = "failed"
                             stats["failed"] += 1

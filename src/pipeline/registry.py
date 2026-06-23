@@ -497,6 +497,13 @@ class StepRegistry:
             port = kwargs.get('port', 9200)
             index_name = kwargs['index_name']
             auth = kwargs.get('auth')
+            use_ssl = kwargs.get('use_ssl', False)
+            verify_certs = kwargs.get('verify_certs', False)
+            batch_size = kwargs.get('batch_size', 500)
+            mappings = kwargs.get('mappings')
+            settings = kwargs.get('settings')
+            id_field = kwargs.get('id_field', 'record_id')
+            skip_not_ready = kwargs.get('skip_not_ready', True)
 
             logger.info(f"Starting OpenSearch load: {host}:{port}/{index_name}")
 
@@ -505,15 +512,30 @@ class StepRegistry:
                 host=host,
                 port=port,
                 index_name=index_name,
-                auth=auth
+                auth=auth,
+                use_ssl=use_ssl,
+                verify_certs=verify_certs,
+                batch_size=batch_size,
+                mappings=mappings,
+                settings=settings,
+                id_field=id_field,
+                skip_not_ready=skip_not_ready,
             )
 
-            logger.info(f"OpenSearch load completed: {result.get('count', 0)} records loaded")
+            logger.info(
+                "OpenSearch load completed: %s records indexed, %s skipped, %s failed",
+                result.get('indexed', 0),
+                result.get('skipped_not_ready', 0),
+                result.get('failed', 0),
+            )
 
             return {
                 'status': 'success',
-                'records_loaded': result.get('count', 0),
-                'index_name': index_name
+                'records_loaded': result.get('indexed', 0),
+                'records_seen': result.get('count', 0),
+                'records_failed': result.get('failed', 0),
+                'records_skipped': result.get('skipped_not_ready', 0),
+                'index_name': index_name,
             }
 
         finally:
